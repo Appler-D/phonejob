@@ -25,6 +25,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 一句话：**这是给自己用的工具，不是给老板用来变相加班的工具。**
 
+基础许可文本：[PolyForm Noncommercial 1.0.0](https://github.com/polyformproject/polyform-licenses/blob/1.0.0/PolyForm-Noncommercial-1.0.0.md)
+
 [可接受使用摘要](ACCEPTABLE-USE.md) · [完整许可](LICENSE)
 
 ## 安全说明
