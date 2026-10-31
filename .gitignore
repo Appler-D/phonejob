@@ -1,0 +1,16 @@
+node_modules/
+.pnpm-store/
+dist/
+build/
+*.log
+*.sqlite
+*.sqlite-*
+*.key
+*.pem
+keys.bin
+.env
+.env.*
+secrets/
+phone-inbox/
+.DS_Store
+Thumbs.db
