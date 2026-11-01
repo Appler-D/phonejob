@@ -53,7 +53,7 @@ PHONEJOB_WORKSPACES="C:/Temp/phonejob-ws" \
 node bridge/index.js
 ```
 
-`PHONEJOB_WORKSPACES` 为空时所有 job 都会被拒绝；`job.files` 非空暂不支持（下一阶段做分片）。job 先落 `pending/` 并停在 `WAITING_CONFIRM`，审批/执行尚未实现。
+`PHONEJOB_WORKSPACES` 为空时所有 job 都会被拒绝；`job.files` 非空暂不支持（下一阶段做分片）。审批已实现（`pending/` → `approved/`）；DSH 执行尚未实现。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 
