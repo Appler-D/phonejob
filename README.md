@@ -10,15 +10,17 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP）；bridge HTTP、PWA、DSH 插件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对密码学）；bridge HTTP、PWA、DSH 插件未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
 
 - `bridge/key-store.js`：电脑生成 32B `K_otp`，DPAPI（用户级）保护后写入 `keys.bin`
 - `bridge/totp.js`：RFC 4226 / RFC 6238 HOTP/TOTP，支持 ±1 步验证
+- `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
-- 测试：`npm test`（Node 24 test runner，无第三方依赖）
+- 测试：`npm test`（Node 24 test runner，无第三方依赖；13 项通过）
+- 下一步：bridge HTTP + `/api/pair/provision` + PWA 端 TOTP 公式
 
 ```bash
 npm test

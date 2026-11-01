@@ -208,8 +208,8 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ## 7. 安全设计（核心）
 
 ### 7.1 配对（一次性，带 SAS 人眼校验）
-1. PC 端 bridge 生成临时 X25519 密钥对，显示二维码：`{bridge_url, pair_id, pc_pub, nonce, expires=120s}`。
-2. 手机扫码 → 生成自己的 X25519 密钥对 → 双方 ECDH 出 `K_pair = HKDF(X25519_shared, salt=pair_id, info="phonejob-v1")`。
+1. PC 端 bridge 生成临时 P-256 密钥对（v1 默认；X25519 可选），显示二维码：`{bridge_url, pair_id, pc_pub, nonce, expires=120s}`。
+2. 手机扫码 → 生成自己的 P-256 密钥对 → 双方 ECDH → `K_pair = HKDF(P-256_shared, salt=pair_id, info="phonejob/v1/pair")`。
 3. PC 与手机**各自显示 6 位 SAS 码**（由 `K_pair` 与配对 transcript 派生），用户核对两侧一致后，在 PC 点「确认配对」。
 4. 派生并存储：
    - `K_confirm = HKDF(K_pair, salt=pair_id, info="phonejob/v1/confirm")`
@@ -246,7 +246,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ### 7.4 密码学参数（固定，不得自行更改）
 | 用途 | 算法 |
 |---|---|
-| 密钥协商 | X25519（WebCrypto ECDH P-256 可替代，但两端必须一致；`DEFAULT` 用 X25519，Node 端 `crypto.diffieHellman`，浏览器端 `X25519` 若不可用则降级 P-256） |
+| 密钥协商 | P-256 ECDH（v1 默认，WebCrypto 全平台支持；X25519 可选，Chrome 133+/Firefox 130+，Safari 需实测） |
 | KDF | HKDF-SHA256，salt = pair_id，info 按用途域分离，32B 输出 |
 | 对称加密 | AES-256-GCM，12B 随机 nonce，AAD = 规范化 header JSON |
 | 消息认证 | GCM tag（128bit）+ 外层 TOTP |
