@@ -28,6 +28,14 @@ const ERROR_STATUS = {
   DEVICE_MISMATCH: 400,
   DEVICE_LIMIT: 429,
   DEVICE_NOT_FOUND: 404,
+  JOB_INVALID: 400,
+  JOB_DEVICE_REJECTED: 404,
+  JOB_TIME_WINDOW: 400,
+  JOB_OTP_INVALID: 400,
+  JOB_WORKSPACE_NOT_ALLOWED: 400,
+  JOB_FILES_UNSUPPORTED: 400,
+  JOB_REPLAY: 409,
+  JOB_INBOX_FAILED: 500,
 };
 
 const CSP = [
@@ -117,7 +125,7 @@ function escapeHtml(value) {
   });
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = MAX_BODY_BYTES) {
   const type = String(req.headers['content-type'] ?? '').toLowerCase();
   if (!type.startsWith('application/json')) throw httpError(415, 'json_required');
 
@@ -125,7 +133,7 @@ async function readJson(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw httpError(413, 'body_too_large');
+    if (size > maxBytes) throw httpError(413, 'body_too_large');
     chunks.push(chunk);
   }
   if (size === 0) throw httpError(400, 'body_required');
@@ -180,6 +188,7 @@ function closeServer(server) {
 
 export function createBridgeServers({
   pairing,
+  jobs = null,
   adminToken = randomBytes(24).toString('base64url'),
   host = '127.0.0.1',
   apiPort = 7788,
@@ -273,6 +282,16 @@ export function createBridgeServers({
           }
           throw err;
         }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/job') {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
+          return;
+        }
+        const body = await readJson(req, 1024 * 1024);
+        const result = await jobs.submit(body);
+        sendJson(res, 200, result, corsHeaders(req));
         return;
       }
       sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
@@ -373,6 +392,16 @@ export function createBridgeServers({
       if (req.method === 'GET' && url.pathname === '/api/devices') {
         checkAdmin(req);
         sendJson(res, 200, { devices: await pairing.listDevices() });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/jobs') {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' });
+          return;
+        }
+        checkAdmin(req);
+        sendJson(res, 200, { jobs: await jobs.listJobs() });
         return;
       }
 

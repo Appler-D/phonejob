@@ -2,7 +2,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { PairingService } from '../bridge/pairing.js';
+import { JobService } from '../bridge/job-service.js';
+import { MemoryJobStore } from '../bridge/job-store.js';
 import { createBridgeServers } from '../bridge/servers.js';
 import {
   canonicalJson,
@@ -14,8 +19,10 @@ import {
   importPeerPublicKey,
   openOtpProvisioning,
   pairingTranscript,
+  sealEnvelope,
 } from '../bridge/crypto.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
+import { totp } from '../bridge/totp.js';
 
 function request(base, pathname, { method = 'GET', headers = {}, body, hostHeader } = {}) {
   const url = new URL(pathname, base);
@@ -55,11 +62,23 @@ function parse(response) {
 
 async function setup(t, { pwaOrigin = null } = {}) {
   const otpSecret = generateOtpSecret();
-  const pairing = new PairingService({
-    loadOtp: async () => ({ secret: otpSecret, keyId: 'key-test' }),
+  const loadOtp = async () => ({ secret: otpSecret, keyId: 'key-test' });
+  const pairing = new PairingService({ loadOtp });
+  const inboxDir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-http-inbox-'));
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'phonejob-http-ws-'));
+  t.after(() => rm(inboxDir, { recursive: true, force: true }));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+
+  const jobs = new JobService({
+    deviceStore: pairing.deviceStore,
+    jobStore: new MemoryJobStore(),
+    loadOtp,
+    inboxDir,
+    workspaceAllowlist: [workspace],
   });
   const servers = createBridgeServers({
     pairing,
+    jobs,
     adminToken: 'test-admin',
     apiPort: 0,
     localPort: 0,
@@ -71,7 +90,7 @@ async function setup(t, { pwaOrigin = null } = {}) {
 
   const api = `http://127.0.0.1:${servers.apiPort}`;
   const local = `http://127.0.0.1:${servers.localPort}`;
-  return { pairing, servers, otpSecret, api, local };
+  return { pairing, jobs, servers, otpSecret, api, local, inboxDir, workspace };
 }
 
 async function startPairing(local, overrides = {}) {
@@ -125,7 +144,7 @@ async function claimPhone(api, start) {
 }
 
 test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
-  const { api, local, otpSecret } = await setup(t);
+  const { api, local, otpSecret, inboxDir, workspace } = await setup(t);
 
   const healthBefore = await request(api, '/api/health');
   assert.equal(healthBefore.status, 200);
@@ -176,6 +195,45 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   assert.equal(provision.status, 200, provision.body);
   const received = await openOtpProvisioning(phone.keys.kEnc, parse(provision));
   assert.equal(received.otpSecret.equals(otpSecret), true);
+
+  const jobNow = Date.now();
+  const jobId = 'job_http_1';
+  const job = {
+    version: 1,
+    job_id: jobId,
+    device_id: phone.claim.device_id,
+    target: { workspace, preset: 'default', session: null },
+    intent: 'ask',
+    text: 'hello http',
+    files: [],
+    reply: { want: 'text', max_bytes: 1024 },
+  };
+  const header = {
+    v: 2,
+    job_id: jobId,
+    device_id: phone.claim.device_id,
+    ts: Math.floor(jobNow / 1000),
+    seq: 1,
+    otp: totp(otpSecret, jobNow),
+  };
+  const envelope = await sealEnvelope(phone.keys.kEnc, header, JSON.stringify(job));
+  const jobResponse = await request(api, '/api/job', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(envelope),
+  });
+  assert.equal(jobResponse.status, 200, jobResponse.body);
+  assert.equal(parse(jobResponse).state, 'WAITING_CONFIRM');
+  const pending = JSON.parse(
+    await readFile(path.join(inboxDir, 'pending', jobId, 'job.json'), 'utf8'),
+  );
+  assert.equal(pending.text, 'hello http');
+  const jobList = await request(local, '/api/jobs', {
+    headers: { 'X-PhoneJob-Admin': 'test-admin' },
+  });
+  assert.equal(jobList.status, 200);
+  assert.equal(parse(jobList).jobs.length, 1);
+  assert.equal(parse(jobList).jobs[0].job_id, jobId);
 
   const healthAfter = await request(api, '/api/health');
   assert.equal(parse(healthAfter).paired_devices, 1);

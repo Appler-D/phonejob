@@ -7,9 +7,17 @@ import { createBridgeServers } from './servers.js';
 import { PairingService } from './pairing.js';
 import { loadOrCreateKeyStore } from './key-store.js';
 import { SqliteDeviceStore } from './device-store.js';
+import { SqliteJobStore } from './job-store.js';
+import { JobService } from './job-service.js';
 
 const VERSION = '0.1.0';
-const dataDir = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'phonejob');
+const stateDir = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+const dataDir = path.join(stateDir, 'phonejob');
+const inboxDir = process.env.PHONEJOB_INBOX || path.join(stateDir, 'phone-inbox');
+const workspaceAllowlist = String(process.env.PHONEJOB_WORKSPACES ?? '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
 const keysPath = process.env.PHONEJOB_KEYS
   ? path.resolve(process.env.PHONEJOB_KEYS)
   : path.join(dataDir, 'keys.bin');
@@ -43,9 +51,12 @@ await loadOtp();
 await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
+const jobStore = new SqliteJobStore({ filePath: dbPath });
 const pairing = new PairingService({ loadOtp, deviceStore });
+const jobs = new JobService({ deviceStore, jobStore, loadOtp, inboxDir, workspaceAllowlist });
 const servers = createBridgeServers({
   pairing,
+  jobs,
   adminToken,
   apiPort,
   localPort,
@@ -60,16 +71,22 @@ try {
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
   console.log(`  keys:  ${keysPath}`);
   console.log(`  db:    ${dbPath}`);
+  console.log(`  inbox: ${inboxDir}`);
+  console.log(
+    `  workspaces: ${workspaceAllowlist.length ? workspaceAllowlist.join(', ') : '(empty: jobs will be rejected)'}`,
+  );
   console.log(`  admin token file: ${tokenPath}`);
 } catch (err) {
   console.error(`failed to start: ${err.message}`);
   process.exitCode = 1;
   await servers.close();
+  await jobStore.close();
   await deviceStore.close();
 }
 
 const shutdown = async () => {
   await servers.close();
+  await jobStore.close();
   await deviceStore.close();
   process.exit(0);
 };

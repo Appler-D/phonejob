@@ -10,7 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备持久化 / PWA 配对与 TOTP）；任务通道、DSH 插件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对与 TOTP / 服务端 job 信封校验与 pending 落盘）；PWA 发送任务 UI、任务确认、DSH 插件未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
@@ -20,7 +20,9 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/pairing.js`：start → claim（SAS 证明）→ 本地确认 SAS → `K_otp` 下发 → 设备登记/吊销
 - `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob；内存 store 供测试
-- `bridge/servers.js`：API 端口只放 `health/claim/provision`；本地端口放 `start/status/confirm/cancel/devices`，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
+- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、`pending/<job_id>/job.json` 原子落盘
+- `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留）
+- `bridge/servers.js`：API 端口放 `health/claim/provision/job`；本地端口放 `start/status/confirm/cancel/devices/jobs`，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
 - `bridge/local/`：PC 配对首页（`/`）与本地确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
@@ -28,9 +30,9 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `pwa/store.js`：IndexedDB 保存设备元数据与不可导出 `CryptoKey`
 - `pwa/app.js` / `pwa/index.html`：粘贴配对信息 → 显示 SAS → 等待电脑确认 → 显示 TOTP
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；29 项通过）
-- 已验证：Chrome 端到端配对 + TOTP，刷新后从 IndexedDB 继续计算；密钥 `extractable:false` / HMAC SHA-1；PC 首页 QR + 确认页链接；SQLite 设备持久化
-- 下一步：Service Worker/Web Push、任务通道、DSH 插件、iOS Safari 实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；37 项通过）
+- 已验证：Chrome 端到端配对 + TOTP，刷新后从 IndexedDB 继续计算；密钥 `extractable:false` / HMAC SHA-1；PC 首页 QR + 确认页链接；SQLite 设备持久化；job 提交落 `pending/`、重启后 job 与设备仍在
+- 下一步：PWA 发送任务 UI、挑战码/审批、DSH 插件认领/回传、Service Worker/Web Push、iOS Safari 实测
 
 ```bash
 npm install
@@ -41,11 +43,15 @@ node bridge/index.js               # 启动 bridge；API 127.0.0.1:7788，本地
 npm run pwa:dev                    # PWA 开发服务器 http://127.0.0.1:8000
 ```
 
-本地联调时让 bridge 允许 PWA origin：
+本地联调时让 bridge 允许 PWA origin，并配置允许的 job 工作区：
 
 ```bash
-PHONEJOB_PWA_ORIGIN=http://127.0.0.1:8000 node bridge/index.js
+PHONEJOB_PWA_ORIGIN=http://127.0.0.1:8000 \
+PHONEJOB_WORKSPACES="C:/Temp/phonejob-ws" \
+node bridge/index.js
 ```
+
+`PHONEJOB_WORKSPACES` 为空时所有 job 都会被拒绝；`job.files` 非空暂不支持（下一阶段做分片）。job 先落 `pending/` 并停在 `WAITING_CONFIRM`，审批/执行尚未实现。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 

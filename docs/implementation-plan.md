@@ -182,17 +182,18 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ### 6.2 密文信封（线上唯一格式）
 ```json
 {
-  "v": 1,
+  "v": 2,
   "job_id": "01J9…",
   "device_id": "dev_7f3a…",
   "ts": 1761919331,
   "seq": 42,
   "otp": "481920",
-  "nonce": "b64:12B",
-  "aad": "b64:header-canonical-json",
-  "ct": "b64:AES-256-GCM 密文(含 tag)"
+  "nonce": "b64url:12B",
+  "ct": "b64url:AES-256-GCM 密文(含 tag)"
 }
 ```
+
+> AAD = canonical(header 字段，含 nonce)；不单独传 `aad` 字段，接收方重建后解密。
 
 ### 6.3 `result.json`
 ```json
@@ -307,6 +308,8 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
 > PWA 独立 origin 时，API 只允许配置的 `PHONEJOB_PWA_ORIGIN` 的 CORS；本地 7789 不设 CORS。
+>
+> 本地 7789 另有 `GET /api/jobs`（admin），用于后续确认 UI；P1 只落 `pending/` + `WAITING_CONFIRM`，文件分片未实现。
 
 ### 8.2 设备会话令牌
 - 每次连接先 `POST /api/session`：服务端发一次性 nonce，手机用
@@ -467,8 +470,11 @@ cloudflared tunnel run phonejob
 | 结果大小 | 20MB/任务 |
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
+| 文件通道 | P1 暂不支持；`job.files` 非空拒绝，下一阶段做分片 |
+| 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
+| 任务确认 | 当前落 `pending/` + `WAITING_CONFIRM`；挑战码/审批/DSH 执行下一步 |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.2 · 2026-11-01 · `K_otp` 电脑生成；设备 SQLite 持久化；PC 配对首页与 QR；其余评审项待定*
+*版本 v1.3 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；服务端 job 信封校验与 pending 落盘；其余评审项待定*

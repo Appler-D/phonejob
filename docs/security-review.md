@@ -358,6 +358,6 @@ TOTP 对服务端时间校验。`K_otp` 由电脑生成、DPAPI 保存、配对�
 
 *修订：2026-11-01 — `K_otp` 改为电脑生成并下发；P0-4(d) 关闭。*
 
-*进度：2026-11-01 — 电脑端 `K_otp`、DPAPI、TOTP、P-256 配对、SAS、信封、`K_otp` 下发、配对服务、API/本地双端口、本地配对确认页、PC 配对首页/QR、SQLite 设备持久化与 PWA 配对/TOTP 已实现（29 项测试通过；Chrome 端到端与 PC 首页已验证，密钥不可导出）；Service Worker/Web Push、任务通道、DSH 插件、iOS Safari 待测。*
+*进度：2026-11-01 — 电脑端 `K_otp`、DPAPI、TOTP、P-256 配对、SAS、信封、`K_otp` 下发、配对服务、API/本地双端口、本地配对确认页、PC 配对首页/QR、SQLite 设备/job 持久化、PWA 配对/TOTP 与服务端 job 信封校验/pending 落盘已实现（37 项测试通过；Chrome 端到端、PC 首页与 job 重启持久化已验证）；PWA 发送任务 UI、挑战码/审批、Service Worker/Web Push、DSH 插件、iOS Safari 待测。*
 
 *本评审基于本机环境与公开文档，不构成法律或安全认证意见；实现前建议按第 5 节逐项 spike。*
