@@ -34,6 +34,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    audit,
   } = {},
 ) {
   const inbox = await mkdtemp(path.join(os.tmpdir(), 'phonejob-inbox-'));
@@ -61,6 +62,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    audit,
   });
   return { service, jobStore, deviceStore, inbox, workspace, otpSecret };
 }
@@ -901,6 +903,53 @@ test('scanResults rejects result files with bad hashes or secrets', async (t) =>
   const zipState = await f.service.getJob(zipJob);
   assert.equal(zipState.state, 'FAILED');
   assert.match(zipState.result_error, /zip entry type/);
+});
+
+test('job transitions emit redacted audit events', async (t) => {
+  const now = 1_761_900_000_000;
+  const events = [];
+  const audit = {
+    record(event, fields) {
+      events.push({ event, ...fields });
+    },
+  };
+  const f = await setup(t, { now: () => now, audit });
+  const jobId = 'job_test_audit_events';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+      text: 'secret task text',
+    }),
+  );
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  const content = Buffer.from('audited result');
+  const meta = await writeResultFile(f.inbox, jobId, 0, content);
+  await writeResult(f.inbox, jobId, { text: 'answer', files: [meta] });
+  await f.service.scanResults();
+
+  assert.deepEqual(
+    events.map((entry) => entry.event),
+    ['job.submitted', 'job.approved', 'job.completed'],
+  );
+  assert.equal(events[0].state, 'WAITING_CONFIRM');
+  assert.equal(events[1].state, 'QUEUED');
+  assert.equal(events[2].state, 'DONE');
+  assert.equal(events[2].files, 1);
+  assert.equal(events[2].file_bytes, content.length);
+  for (const entry of events) {
+    assert.equal(entry.job_id, jobId);
+    for (const key of ['text', 'workspace', 'challenge', 'job_hash', 'file_name']) {
+      assert.equal(key in entry, false, key);
+    }
+  }
 });
 
 test('zip uploads are scanned before they reach pending', async (t) => {

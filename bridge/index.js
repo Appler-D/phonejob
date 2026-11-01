@@ -9,6 +9,7 @@ import { loadOrCreateKeyStore } from './key-store.js';
 import { SqliteDeviceStore } from './device-store.js';
 import { SqliteJobStore } from './job-store.js';
 import { JobService } from './job-service.js';
+import { AuditLog } from './audit.js';
 
 const VERSION = '0.1.0';
 const stateDir = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -60,10 +61,12 @@ const loadOtp = async () => {
 const adminToken = process.env.PHONEJOB_ADMIN_TOKEN || randomBytes(24).toString('base64url');
 const tokenPath = path.join(path.dirname(keysPath), 'admin.token');
 const dbPath = path.join(path.dirname(keysPath), 'phonejob.sqlite');
+const auditPath = path.join(path.dirname(keysPath), 'audit.jsonl');
 await mkdir(path.dirname(keysPath), { recursive: true });
 await loadOtp();
 await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 
+const audit = new AuditLog({ filePath: auditPath });
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
 const jobStore = new SqliteJobStore({ filePath: dbPath });
 const pairing = new PairingService({ loadOtp, deviceStore });
@@ -76,6 +79,7 @@ const jobs = new JobService({
   confirmTtlMs,
   uploadTtlMs,
   executionTtlMs,
+  audit,
 });
 const servers = createBridgeServers({
   pairing,
@@ -110,6 +114,7 @@ try {
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
   console.log(`  keys:  ${keysPath}`);
   console.log(`  db:    ${dbPath}`);
+  console.log(`  audit: ${auditPath}`);
   console.log(`  inbox: ${inboxDir}`);
   console.log(
     `  workspaces: ${workspaceAllowlist.length ? workspaceAllowlist.join(', ') : '(empty: jobs will be rejected)'}`,
@@ -121,6 +126,7 @@ try {
   if (resultTimer) clearInterval(resultTimer);
   if (timeoutTimer) clearInterval(timeoutTimer);
   await servers.close();
+  await audit.close();
   await jobStore.close();
   await deviceStore.close();
 }
@@ -129,6 +135,7 @@ const shutdown = async () => {
   if (resultTimer) clearInterval(resultTimer);
   if (timeoutTimer) clearInterval(timeoutTimer);
   await servers.close();
+  await audit.close();
   await jobStore.close();
   await deviceStore.close();
   process.exit(0);

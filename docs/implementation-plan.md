@@ -159,7 +159,7 @@ UPLOADING ──分片完成──▶ WAITING_CONFIRM
 
 - 未在 `WAITING_CONFIRM` 前通过全部校验的任务，**永远不落进 `approved/`**。
 - 超时默认值：`UPLOADING` 30 分钟 → `EXPIRED`（清理 staging）；`WAITING_CONFIRM` 10 分钟 → `EXPIRED`（移入 `expired/`）；`QUEUED/RUNNING` 35 分钟兜底 → `FAILED`（`JOB_EXECUTION_TIMEOUT`），插件自身 30 分钟先取消当前轮。可用环境变量覆盖 bridge 的三个 TTL。
-- 每个状态转换写审计日志（JSONL，含 job_id、时间、来源指纹、结果）。
+- 每个任务状态转换写 JSONL 审计日志（`%DSH_HOME%/phonejob/audit.jsonl`）：时间、事件、`job_id`、`device_id`、`state`、`risk`、`intent`、文件数/字节、错误；不记录正文、工作区路径、挑战码、`job_hash` 或密钥。按 5MB 轮转，保留 4 份备份。
 
 ---
 
@@ -486,8 +486,9 @@ cloudflared tunnel run phonejob
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
 | DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；隔离 DSH 已验，桌面真实模型回复待验证 |
 | 超时 | 上传 30 分钟、确认 10 分钟 → `EXPIRED`；执行 35 分钟兜底 `FAILED` |
+| 审计 | 任务状态 JSONL；字段白名单；5MB 轮转保留 4 份；90 天保留待补 |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v2.2 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；zip 条目扫描；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v2.3 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；zip 条目扫描；任务审计；DSH 插件隔离实机验证；其余评审项待定*

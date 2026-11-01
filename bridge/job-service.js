@@ -128,6 +128,7 @@ export class JobService {
     confirmTtlMs = DEFAULT_CONFIRM_TTL_MS,
     uploadTtlMs = DEFAULT_UPLOAD_TTL_MS,
     executionTtlMs = DEFAULT_EXECUTION_TTL_MS,
+    audit = null,
   } = {}) {
     if (!deviceStore || !jobStore || typeof loadOtp !== 'function' || !inboxDir) {
       throw new TypeError('deviceStore, jobStore, loadOtp, and inboxDir are required');
@@ -141,8 +142,20 @@ export class JobService {
     this.confirmTtlMs = confirmTtlMs;
     this.uploadTtlMs = uploadTtlMs;
     this.executionTtlMs = executionTtlMs;
+    this.audit = audit;
     this.scanning = false;
     this.timeoutScanning = false;
+  }
+
+  #audit(event, job, extra = {}) {
+    this.audit?.record(event, {
+      job_id: job?.job_id,
+      device_id: job?.device_id,
+      state: job?.state,
+      risk: job?.risk,
+      intent: job?.intent,
+      ...extra,
+    });
   }
 
   async submit(envelope) {
@@ -274,6 +287,11 @@ export class JobService {
         }
         throw jobError('JOB_REPLAY');
       }
+      this.#audit(
+        'job.submitted',
+        { job_id, device_id, state: 'UPLOADING', risk, intent: job.intent },
+        { files: uploadFiles.length, file_bytes: totalFileBytes },
+      );
       return {
         job_id,
         state: 'UPLOADING',
@@ -333,6 +351,11 @@ export class JobService {
         throw jobError('JOB_INBOX_FAILED');
       }
     }
+    this.#audit(
+      'job.submitted',
+      { job_id, device_id, state: 'WAITING_CONFIRM', risk, intent: job.intent },
+      { files: 0, file_bytes: 0 },
+    );
     return { job_id, state: 'WAITING_CONFIRM', risk };
   }
 
@@ -487,6 +510,20 @@ export class JobService {
       await rename(finalDir, stagingDir).catch(() => {});
       throw jobError('JOB_NOT_UPLOADING');
     }
+    this.#audit(
+      'job.upload_completed',
+      {
+        job_id: jobId,
+        device_id: job.device_id,
+        state: 'WAITING_CONFIRM',
+        risk: job.risk,
+        intent: job.intent,
+      },
+      {
+        files: content.files.length,
+        file_bytes: content.files.reduce((sum, item) => sum + item.size, 0),
+      },
+    );
     return { job_id: jobId, state: 'WAITING_CONFIRM', challenge };
   }
 
@@ -563,12 +600,26 @@ export class JobService {
             resultError: check.error,
             finishedAt,
           });
+          this.#audit('job.result_rejected', job, {
+            state: 'FAILED',
+            error: check.error,
+            files: Array.isArray(result.files) ? result.files.length : 0,
+          });
           completed.push({ job_id: jobId, state: 'FAILED', error: check.error });
           continue;
         }
         const state = result.status === 'done' ? 'DONE' : 'FAILED';
         const error = result.status === 'failed' ? (result.error ?? 'failed') : null;
         await this.jobStore.completeJob({ jobId, state, resultError: error, finishedAt });
+        this.#audit('job.completed', job, {
+          state,
+          error,
+          files: result.files.length,
+          file_bytes: result.files.reduce(
+            (sum, file) => sum + (Number.isInteger(file.size) ? file.size : 0),
+            0,
+          ),
+        });
         completed.push({ job_id: jobId, state, error });
       }
       return completed;
@@ -598,6 +649,11 @@ export class JobService {
             recursive: true,
             force: true,
           });
+          this.#audit('job.expired', job, {
+            state: 'EXPIRED',
+            error: 'JOB_UPLOAD_TIMEOUT',
+            reason: 'upload_timeout',
+          });
           expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_UPLOAD_TIMEOUT' });
           continue;
         }
@@ -625,6 +681,11 @@ export class JobService {
             inboxPath: expiredDir,
           });
           if (updated) {
+            this.#audit('job.expired', job, {
+              state: 'EXPIRED',
+              error: 'JOB_CONFIRM_TIMEOUT',
+              reason: 'confirm_timeout',
+            });
             expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_CONFIRM_TIMEOUT' });
           }
           continue;
@@ -640,6 +701,10 @@ export class JobService {
             finishedAt: now,
           });
           if (updated) {
+            this.#audit('job.execution_timeout', job, {
+              state: 'FAILED',
+              error: 'JOB_EXECUTION_TIMEOUT',
+            });
             expired.push({ job_id: job.job_id, state: 'FAILED', error: 'JOB_EXECUTION_TIMEOUT' });
           }
         }
@@ -774,6 +839,7 @@ export class JobService {
       await rename(approvedDir, pendingDir).catch(() => {});
       throw jobError('JOB_NOT_WAITING');
     }
+    this.#audit('job.approved', job, { state: 'QUEUED' });
     return { job_id: jobId, state: 'QUEUED' };
   }
 
@@ -801,6 +867,7 @@ export class JobService {
       await rename(rejectedDir, pendingDir).catch(() => {});
       throw jobError('JOB_NOT_WAITING');
     }
+    this.#audit('job.rejected', job, { state: 'REJECTED' });
     return { job_id: jobId, state: 'REJECTED' };
   }
 
