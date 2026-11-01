@@ -329,6 +329,37 @@ test('API errors are mapped without leaking internals', async (t) => {
   assert.equal(parse(badJson).error, 'invalid_json');
 });
 
+test('PC home generates a QR payload for the PWA origin', async (t) => {
+  const { local } = await setup(t, { pwaOrigin: 'http://127.0.0.1:8000' });
+
+  const home = await request(local, '/');
+  assert.equal(home.status, 200);
+  assert.match(home.body, /PhoneJob 配对/);
+  assert.match(home.body, /name="phonejob-admin-token" content="test-admin"/);
+  assert.match(home.headers['content-security-policy'], /img-src 'self' data:/);
+  assert.match(home.headers['content-security-policy'], /style-src 'self' 'unsafe-inline'/);
+  assert.equal(home.headers['cache-control'], 'no-store');
+
+  const homeJs = await request(local, '/local/home.js');
+  assert.equal(homeJs.status, 200);
+  assert.match(homeJs.headers['content-type'], /application\/javascript/);
+  const homeCss = await request(local, '/local/home.css');
+  assert.equal(homeCss.status, 200);
+
+  const startResponse = await startPairing(local);
+  assert.equal(startResponse.status, 200);
+  const start = parse(startResponse);
+  assert.ok(start.qr_data_url.startsWith('data:image/svg+xml;base64,'));
+  assert.ok(start.pwa_url.startsWith('http://127.0.0.1:8000/#pair='));
+
+  const encoded = start.pwa_url.split('#pair=')[1];
+  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+  assert.equal(payload.pair_id, start.pair_id);
+  assert.equal(payload.bridge_url, 'https://bridge.test');
+  assert.equal(payload.expires_at, start.expires_at);
+  assert.ok(start.local_url.startsWith('http://127.0.0.1:'));
+});
+
 test('API only allows the configured PWA origin', async (t) => {
   const { api, local } = await setup(t, { pwaOrigin: 'http://127.0.0.1:8000' });
   const origin = 'http://127.0.0.1:8000';

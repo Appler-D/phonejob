@@ -92,7 +92,7 @@ test('pairing carries a PC-generated K_otp to the phone', async () => {
     proof: retryProof,
   });
   assert.equal(retry.ct, envelope.ct);
-  assert.equal(fixture.service.listDevices().length, 1);
+  assert.equal((await fixture.service.listDevices()).length, 1);
   assert.equal(fixture.service.getStatus(fixture.start.pair_id).state, 'provisioned');
 });
 
@@ -185,10 +185,10 @@ test('device revocation is local and idempotent', async () => {
     proof: await provisionProof(fixture),
   });
 
-  assert.equal(fixture.service.revokeDevice(fixture.claim.device_id).ok, true);
-  assert.equal(fixture.service.listDevices()[0].revoked, true);
-  assert.equal(fixture.service.revokeDevice(fixture.claim.device_id).ok, true);
-  assert.throws(
+  assert.equal((await fixture.service.revokeDevice(fixture.claim.device_id)).ok, true);
+  assert.equal((await fixture.service.listDevices())[0].revoked, true);
+  assert.equal((await fixture.service.revokeDevice(fixture.claim.device_id)).ok, true);
+  await assert.rejects(
     () => fixture.service.revokeDevice('dev_missing'),
     (err) => err.code === 'DEVICE_NOT_FOUND',
   );

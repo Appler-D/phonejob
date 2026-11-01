@@ -4,10 +4,14 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import qrcode from 'qrcode-generator';
 
 const LOCAL_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'local');
 const LOCAL_HTML = readFileSync(path.join(LOCAL_DIR, 'confirm.html'), 'utf8');
 const LOCAL_JS = readFileSync(path.join(LOCAL_DIR, 'app.js'), 'utf8');
+const LOCAL_HOME_HTML = readFileSync(path.join(LOCAL_DIR, 'home.html'), 'utf8');
+const LOCAL_HOME_JS = readFileSync(path.join(LOCAL_DIR, 'home.js'), 'utf8');
+const LOCAL_HOME_CSS = readFileSync(path.join(LOCAL_DIR, 'home.css'), 'utf8');
 const MAX_BODY_BYTES = 16 * 1024;
 
 const ERROR_STATUS = {
@@ -29,9 +33,9 @@ const ERROR_STATUS = {
 const CSP = [
   "default-src 'none'",
   "script-src 'self'",
-  "style-src 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
   "connect-src 'self'",
-  "img-src 'self'",
+  "img-src 'self' data:",
   "base-uri 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
@@ -84,6 +88,33 @@ function sendJs(res, status, js) {
     'X-Content-Type-Options': 'nosniff',
   });
   res.end(js);
+}
+
+function sendCss(res, status, css) {
+  res.writeHead(status, {
+    'Content-Type': 'text/css; charset=utf-8',
+    'Content-Length': Buffer.byteLength(css),
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(css);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
 }
 
 async function readJson(req) {
@@ -203,7 +234,7 @@ export function createBridgeServers({
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/health') {
-        const devices = pairing.listDevices();
+        const devices = await pairing.listDevices();
         sendJson(
           res,
           200,
@@ -255,6 +286,21 @@ export function createBridgeServers({
       const url = new URL(req.url, 'http://127.0.0.1');
       checkHost(req, allowedHosts());
 
+      if (req.method === 'GET' && url.pathname === '/') {
+        sendHtml(res, 200, LOCAL_HOME_HTML.replace('__ADMIN_TOKEN__', escapeHtml(adminToken)));
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/local/home.js') {
+        sendJs(res, 200, LOCAL_HOME_JS);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/local/home.css') {
+        sendCss(res, 200, LOCAL_HOME_CSS);
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/local/app.js') {
         sendJs(res, 200, LOCAL_JS);
         return;
@@ -284,7 +330,23 @@ export function createBridgeServers({
         const token = randomBytes(24).toString('base64url');
         localTokens.set(result.pair_id, token);
         const localUrl = `http://127.0.0.1:${actualLocalPort}/pair/${result.pair_id}?token=${token}`;
-        sendJson(res, 200, { ...result, local_url: localUrl });
+        let pwaUrl = null;
+        let qrDataUrl = null;
+        if (allowedPwaOrigin) {
+          const payload = Buffer.from(JSON.stringify(result.qr), 'utf8').toString('base64url');
+          pwaUrl = `${allowedPwaOrigin}/#pair=${payload}`;
+          const qr = qrcode(0, 'M');
+          qr.addData(pwaUrl);
+          qr.make();
+          const svg = qr.createSvgTag({ cellSize: 5, margin: 4 });
+          qrDataUrl = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+        }
+        sendJson(res, 200, {
+          ...result,
+          local_url: localUrl,
+          pwa_url: pwaUrl,
+          qr_data_url: qrDataUrl,
+        });
         return;
       }
 
@@ -310,7 +372,7 @@ export function createBridgeServers({
 
       if (req.method === 'GET' && url.pathname === '/api/devices') {
         checkAdmin(req);
-        sendJson(res, 200, { devices: pairing.listDevices() });
+        sendJson(res, 200, { devices: await pairing.listDevices() });
         return;
       }
 
@@ -318,7 +380,7 @@ export function createBridgeServers({
       if (req.method === 'DELETE' && device) {
         checkOrigin(req, allowedOrigins());
         checkAdmin(req);
-        pairing.revokeDevice(device[1]);
+        await pairing.revokeDevice(device[1]);
         sendJson(res, 200, { ok: true });
         return;
       }

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="phonejob-admin-token" content="__ADMIN_TOKEN__">
+  <title>PhoneJob 配对</title>
+  <link rel="stylesheet" href="/local/home.css">
+</head>
+<body>
+  <main>
+    <h1>PhoneJob 配对</h1>
+    <p class="hint">在电脑上生成配对二维码，用手机扫描。密码子由电脑生成，手机只负责计算 TOTP。</p>
+
+    <label for="bridge-url">Bridge URL</label>
+    <input id="bridge-url" type="url" value="http://127.0.0.1:7788" spellcheck="false" autocapitalize="off">
+    <p class="hint">公网使用时填隧道地址；本机测试保持 127.0.0.1:7788。</p>
+
+    <button id="start-button" type="button">生成配对二维码</button>
+    <p id="status" class="status"></p>
+    <p id="error" class="error" role="alert"></p>
+
+    <section id="result" hidden>
+      <h2>用手机扫描</h2>
+      <img id="qr" alt="配对二维码" width="280" height="280">
+      <p><a id="confirm-link" href="#" target="_blank" rel="noopener">打开电脑确认页</a></p>
+      <p class="hint">手机提交后，确认页会显示 SAS；核对手机上的 SAS 后输入并确认。</p>
+    </section>
+  </main>
+  <script src="/local/home.js" defer></script>
+</body>
+</html>

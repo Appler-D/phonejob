@@ -11,6 +11,7 @@ import {
   pairingTranscript,
   sealOtpProvisioning,
 } from './crypto.js';
+import { MemoryDeviceStore } from './device-store.js';
 
 const PAIRING_TTL_MS = 120_000;
 const PROVISION_TTL_MS = 300_000;
@@ -48,17 +49,18 @@ function decodePublicKey(value) {
 export class PairingService {
   constructor({
     loadOtp,
+    deviceStore = new MemoryDeviceStore(),
     now = () => Date.now(),
     pairingTtlMs = PAIRING_TTL_MS,
     provisionTtlMs = PROVISION_TTL_MS,
   } = {}) {
     if (typeof loadOtp !== 'function') throw new TypeError('loadOtp is required');
     this.loadOtp = loadOtp;
+    this.deviceStore = deviceStore;
     this.now = now;
     this.pairingTtlMs = pairingTtlMs;
     this.provisionTtlMs = provisionTtlMs;
     this.pairings = new Map();
-    this.devices = new Map();
   }
 
   async startPairing({ bridgeUrl } = {}) {
@@ -181,7 +183,7 @@ export class PairingService {
       throw pairingError('PROVISION_PROOF_INVALID');
     }
     if (session.state === 'provisioned') return session.provisionEnvelope;
-    const activeDevices = [...this.devices.values()].filter((device) => !device.revoked).length;
+    const activeDevices = (await this.deviceStore.listDevices()).filter((device) => !device.revoked).length;
     if (activeDevices >= MAX_DEVICES) throw pairingError('DEVICE_LIMIT');
 
     const { secret, keyId } = await this.loadOtp();
@@ -194,14 +196,16 @@ export class PairingService {
       keyId,
       otpSecret: secret,
     });
-    this.devices.set(deviceId, {
+    await this.deviceStore.saveDevice({
       deviceId,
       phonePub: session.phonePub,
-      kEnc: session.keys.kEnc,
-      kConfirm: session.keys.kConfirm,
-      kAuth: session.keys.kAuth,
+      keys: {
+        kEnc: session.keys.kEnc,
+        kConfirm: session.keys.kConfirm,
+        kAuth: session.keys.kAuth,
+      },
+      keyId,
       createdAt: this.now(),
-      revoked: false,
     });
     session.state = 'provisioned';
     session.provisionEnvelope = envelope;
@@ -216,17 +220,12 @@ export class PairingService {
   }
 
   listDevices() {
-    return [...this.devices.values()].map(({ deviceId, createdAt, revoked }) => ({
-      device_id: deviceId,
-      created_at: createdAt,
-      revoked,
-    }));
+    return this.deviceStore.listDevices();
   }
 
-  revokeDevice(deviceId) {
-    const device = this.devices.get(deviceId);
-    if (!device) throw pairingError('DEVICE_NOT_FOUND');
-    device.revoked = true;
+  async revokeDevice(deviceId) {
+    const revoked = await this.deviceStore.revokeDevice(deviceId);
+    if (!revoked) throw pairingError('DEVICE_NOT_FOUND');
     return { ok: true };
   }
 

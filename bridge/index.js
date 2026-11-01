@@ -6,6 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createBridgeServers } from './servers.js';
 import { PairingService } from './pairing.js';
 import { loadOrCreateKeyStore } from './key-store.js';
+import { SqliteDeviceStore } from './device-store.js';
 
 const VERSION = '0.1.0';
 const dataDir = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'phonejob');
@@ -36,11 +37,13 @@ const loadOtp = async () => {
 
 const adminToken = process.env.PHONEJOB_ADMIN_TOKEN || randomBytes(24).toString('base64url');
 const tokenPath = path.join(path.dirname(keysPath), 'admin.token');
+const dbPath = path.join(path.dirname(keysPath), 'phonejob.sqlite');
 await mkdir(path.dirname(keysPath), { recursive: true });
 await loadOtp();
 await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 
-const pairing = new PairingService({ loadOtp });
+const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
+const pairing = new PairingService({ loadOtp, deviceStore });
 const servers = createBridgeServers({
   pairing,
   adminToken,
@@ -56,15 +59,18 @@ try {
   console.log(`  api:   http://127.0.0.1:${servers.apiPort} (expose this via the tunnel only)`);
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
   console.log(`  keys:  ${keysPath}`);
+  console.log(`  db:    ${dbPath}`);
   console.log(`  admin token file: ${tokenPath}`);
 } catch (err) {
   console.error(`failed to start: ${err.message}`);
   process.exitCode = 1;
   await servers.close();
+  await deviceStore.close();
 }
 
 const shutdown = async () => {
   await servers.close();
+  await deviceStore.close();
   process.exit(0);
 };
 process.once('SIGINT', shutdown);

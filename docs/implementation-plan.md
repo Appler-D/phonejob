@@ -107,7 +107,7 @@
 ### 4.3 `phonejob-bridge`（新写，Node 24 单进程）
 - 监听 `127.0.0.1:7788`（`DEFAULT`），只允许隧道转发进来。
 - 职责：配对、会话令牌、解密验签、TOTP 校验、挑战码生成与 UI、任务落盘、结果回传、审计日志、限流锁定。
-- 存储：SQLite（`phonejob.sqlite`）只存元数据与状态；文件落在 `phone-inbox/`。
+- 存储：SQLite（`phonejob.sqlite`）存设备元数据与 DPAPI 加密的每设备密钥 blob；`K_otp` 在 `keys.bin`；任务文件落 `phone-inbox/`。
 - 生命周期：Windows 计划任务「登录时启动」或 `nssm` 服务；崩溃自动重启。
 
 ### 4.4 本地收件箱（"对应的程序"）
@@ -256,7 +256,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | 动态密码子 | HOTP/TOTP RFC 6238，SHA-1，6 位，30s，±1 步；`K_otp` 32B 由电脑首次安装生成，DPAPI 保存，配对时经 `K_enc` 下发，手机只计算 |
 | 挑战响应 | HMAC-SHA256(K_confirm, "confirm-v1" \|\| job_hash \|\| challenge) → Base32 前 8 位 |
 | 文件完整性 | SHA-256，落盘后复核 |
-| 电脑端密钥存储 | Windows DPAPI（`CryptProtectData`，用户级），文件 `%DSH_HOME%\phonejob\keys.bin` |
+| 电脑端密钥存储 | Windows DPAPI（`CryptProtectData`，用户级）：`K_otp` 在 `keys.bin`；每设备 `kEnc/kConfirm/kAuth` 以 DPAPI blob 存 SQLite |
 
 ### 7.5 限流与锁定
 - 每设备：10 任务/小时，20 文件/任务，单文件 ≤ 50MB，任务总大小 ≤ 200MB。
@@ -379,6 +379,8 @@ cloudflared tunnel run phonejob
 
 # 5) PWA：独立稳定 origin 托管 pwa/（GitHub Pages / Cloudflare Pages 等）
 #    并在 bridge 环境设置 PHONEJOB_PWA_ORIGIN=<该 origin>
+
+# 6) 打开电脑配对首页：http://127.0.0.1:7789/
 ```
 
 - 防火墙：只需允许 `cloudflared` 出站；**不开放任何入站端口**。
@@ -464,8 +466,9 @@ cloudflared tunnel run phonejob
 | 自动放行 | 关闭；仅 `intent=ask` 且 `risk=low` 可开启白名单 |
 | 结果大小 | 20MB/任务 |
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
+| 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.1 · 2026-11-01 · `K_otp` 改为电脑生成并下发；其余评审项待定*
+*版本 v1.2 · 2026-11-01 · `K_otp` 电脑生成；设备 SQLite 持久化；PC 配对首页与 QR；其余评审项待定*

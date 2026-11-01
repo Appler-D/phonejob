@@ -12,5 +12,8 @@
     "test": "node --test",
     "keys:init": "node bridge/key-init.js",
     "pwa:dev": "node tools/serve-pwa.js"
+  },
+  "dependencies": {
+    "qrcode-generator": "2.0.4"
   }
 }
