@@ -38,6 +38,16 @@ export class MemoryJobStore {
     return true;
   }
 
+  async completeJob({ jobId, state, resultError = null, finishedAt }) {
+    const job = this.jobs.get(jobId);
+    if (!job || !['QUEUED', 'RUNNING'].includes(job.state)) return false;
+    job.state = state;
+    job.result_error = resultError;
+    job.finished_at = finishedAt;
+    job.updated_at = finishedAt;
+    return true;
+  }
+
   async close() {}
 }
 
@@ -59,6 +69,8 @@ export class SqliteJobStore {
         challenge TEXT,
         job_hash TEXT,
         decided_at INTEGER,
+        result_error TEXT,
+        finished_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -76,6 +88,8 @@ export class SqliteJobStore {
     if (!columns.has('challenge')) this.db.exec('ALTER TABLE jobs ADD COLUMN challenge TEXT');
     if (!columns.has('job_hash')) this.db.exec('ALTER TABLE jobs ADD COLUMN job_hash TEXT');
     if (!columns.has('decided_at')) this.db.exec('ALTER TABLE jobs ADD COLUMN decided_at INTEGER');
+    if (!columns.has('result_error')) this.db.exec('ALTER TABLE jobs ADD COLUMN result_error TEXT');
+    if (!columns.has('finished_at')) this.db.exec('ALTER TABLE jobs ADD COLUMN finished_at INTEGER');
   }
 
   async getJob(jobId) {
@@ -151,6 +165,17 @@ export class SqliteJobStore {
         WHERE job_id = ? AND state = 'WAITING_CONFIRM'
       `)
       .run(state, inboxPath, decidedAt, decidedAt, jobId);
+    return result.changes > 0;
+  }
+
+  async completeJob({ jobId, state, resultError = null, finishedAt }) {
+    const result = this.db
+      .prepare(`
+        UPDATE jobs
+        SET state = ?, result_error = ?, finished_at = ?, updated_at = ?
+        WHERE job_id = ? AND state IN ('QUEUED', 'RUNNING')
+      `)
+      .run(state, resultError, finishedAt, finishedAt, jobId);
     return result.changes > 0;
   }
 

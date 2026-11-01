@@ -134,8 +134,9 @@
 - 结果：`phone_job_reply` 写 `done/<id>/result.json`，bridge 监听到后加密回传。
 
 ### 4.6 结果回传
-- 结果 ≤ 200KB 直接 JSON；超过则写文件（≤ 20MB/任务）。
-- 手机端：Web Push 通知 → 打开详情页 → 从桥下载（同样 AEAD 加密）。
+- 当前实现只支持 ≤200KB 文本结果；`result.files` 非空视为失败，文件结果下一阶段。
+- 执行器写 `done/<job_id>/result.json`；bridge 每秒扫描、校验结构和密钥模式后，用设备 `K_enc` 加密结果。
+- 手机端通过签名接口拉取并解密显示；Web Push 通知后续。
 
 ---
 
@@ -206,6 +207,8 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
   "error": null
 }
 ```
+
+> bridge 校验 `job_id`、`status`、`finished_at`、文本大小与 `files`（当前必须为空），并扫描私钥/云密钥模式与 `K_otp`；命中则 job `FAILED`，不返回结果。
 
 ---
 
@@ -306,7 +309,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | POST | `/api/job` | 提交密文信封（≤ 1MB 元数据；文件走分片） |
 | PUT | `/api/job/:id/file/:idx` | 分片上传密文块（`Content-Range`） |
 | GET | `/api/job/:id` | 查询状态 + 挑战码（设备签名 `X-PhoneJob-Device/Ts/Proof`） |
-| GET | `/api/job/:id/result` | 取加密结果 |
+| GET | `/api/job/:id/result` | 取加密结果（设备签名 `job-result-v1`） |
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
 > PWA 独立 origin 时，API 只允许配置的 `PHONEJOB_PWA_ORIGIN` 的 CORS；本地 7789 不设 CORS。
@@ -469,11 +472,12 @@ cloudflared tunnel run phonejob
 | 手机 UI 框架 | 原生 JS（无构建链） |
 | 会话归属 | 单独会话「手机任务」，不污染现有会话 |
 | 自动放行 | 关闭；仅 `intent=ask` 且 `risk=low` 可开启白名单 |
-| 结果大小 | 20MB/任务 |
+| 结果大小 | 文本 ≤200KB/任务；结果文件未实现 |
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
 | PWA 任务表单 | 已实现文本任务；工作区从配对二维码预填；文件分片未实现 |
 | 文件通道 | P1 暂不支持；`job.files` 非空拒绝，下一阶段做分片 |
+| 结果文件 | `result.files` 非空视为失败，下一阶段 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED`；DSH 执行下一步 |
 | 确认超时 | 尚未自动拒绝；P2 后续补 |
@@ -481,4 +485,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v1.5 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；job 校验；PWA 发送任务 + 挑战响应；电脑审批与 approved/；其余评审项待定*
+*版本 v1.6 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；job 校验；PWA 发送任务 + 挑战响应；电脑审批；结果加密回传；其余评审项待定*

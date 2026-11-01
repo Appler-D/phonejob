@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { MemoryDeviceStore } from '../bridge/device-store.js';
 import { MemoryJobStore } from '../bridge/job-store.js';
 import { JobService } from '../bridge/job-service.js';
-import { canonicalJson, hmacSha256Base64Url, sealEnvelope } from '../bridge/crypto.js';
+import {
+  canonicalJson,
+  hmacSha256Base64Url,
+  openEnvelope,
+  sealEnvelope,
+} from '../bridge/crypto.js';
 import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp } from '../bridge/totp.js';
@@ -44,6 +49,22 @@ async function setup(t, { now = () => Date.now() } = {}) {
     now,
   });
   return { service, jobStore, deviceStore, inbox, workspace, otpSecret };
+}
+
+async function writeResult(inbox, jobId, overrides = {}) {
+  const dir = path.join(inbox, 'done', jobId);
+  await mkdir(dir, { recursive: true });
+  const result = {
+    job_id: jobId,
+    status: 'done',
+    finished_at: new Date().toISOString(),
+    text: 'the answer',
+    files: [],
+    error: null,
+    ...overrides,
+  };
+  await writeFile(path.join(dir, 'result.json'), JSON.stringify(result));
+  return result;
 }
 
 async function makeEnvelope({
@@ -308,6 +329,123 @@ test('device status requires a signed request', async (t) => {
   await assert.rejects(
     () => f.service.getForDevice({ jobId: 'job_missing_1', deviceId: DEVICE_ID, ts, proof: missingProof }),
     (err) => err.code === 'JOB_NOT_FOUND',
+  );
+});
+
+test('scanResults completes a job and the result is sealed for the phone', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_result';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  await writeResult(f.inbox, jobId, { text: 'the answer' });
+
+  const completed = await f.service.scanResults();
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].state, 'DONE');
+  assert.equal((await f.service.getJob(jobId)).state, 'DONE');
+
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-result-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const sealed = await f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof });
+  const opened = await openEnvelope(KEYS.kEnc, sealed);
+  const result = JSON.parse(Buffer.from(opened.plaintext).toString('utf8'));
+  assert.equal(result.text, 'the answer');
+  assert.equal(result.job_id, jobId);
+
+  const statusProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const status = await f.service.getForDevice({
+    jobId,
+    deviceId: DEVICE_ID,
+    ts,
+    proof: statusProof,
+  });
+  assert.equal(status.state, 'DONE');
+  await assert.rejects(
+    () => f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof: 'bad' }),
+    (err) => err.code === 'JOB_STATUS_AUTH',
+  );
+});
+
+test('unsafe or invalid results are marked failed and blocked', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_blocked';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  await writeResult(f.inbox, jobId, { text: `leak sk-${'A'.repeat(24)}` });
+
+  const completed = await f.service.scanResults();
+  assert.equal(completed[0].state, 'FAILED');
+  assert.match(completed[0].error, /secret/);
+  const updated = await f.service.getJob(jobId);
+  assert.equal(updated.state, 'FAILED');
+  assert.match(updated.result_error, /secret/);
+
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-result-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  await assert.rejects(
+    () => f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof }),
+    (err) => err.code === 'JOB_RESULT_BLOCKED',
+  );
+});
+
+test('result is not available before the job is completed', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_not_ready';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-result-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  await assert.rejects(
+    () => f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof }),
+    (err) => err.code === 'JOB_RESULT_NOT_READY',
   );
 });
 

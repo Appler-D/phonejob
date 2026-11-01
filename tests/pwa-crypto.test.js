@@ -122,6 +122,31 @@ test('PWA seals a job envelope the bridge can open', async () => {
   await assert.rejects(() => crypto.subtle.exportKey('raw', hmacKey));
 });
 
+test('PWA opens a result envelope sealed by the bridge', async () => {
+  const { pcKeys, phoneKeys } = await keysForBothSides();
+  const header = {
+    v: 1,
+    type: 'job-result-v1',
+    job_id: 'job_test_result',
+    device_id: 'dev_test_device_1',
+  };
+  const result = {
+    job_id: 'job_test_result',
+    status: 'done',
+    finished_at: '2026-11-01T00:00:00.000Z',
+    text: 'the answer',
+    files: [],
+    error: null,
+  };
+  const sealed = await bridge.sealEnvelope(pcKeys.kEnc, header, JSON.stringify(result));
+  const aesKey = await pwa.importAesKey(phoneKeys.kEnc);
+  const opened = await pwa.openEnvelope(aesKey, sealed);
+  assert.equal(Buffer.from(opened.plaintext).toString('utf8'), JSON.stringify(result));
+  await assert.rejects(() =>
+    pwa.openEnvelope(aesKey, { ...sealed, job_id: 'job_other_1' }),
+  );
+});
+
 test('PWA confirmation response and status proof match the bridge', async () => {
   const { phoneKeys } = await keysForBothSides();
   const confirmKey = await pwa.importHmacKey(phoneKeys.kConfirm);

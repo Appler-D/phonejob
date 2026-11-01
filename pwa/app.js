@@ -13,6 +13,7 @@ import {
   importHmacKey,
   importOtpKey,
   importPeerPublicKey,
+  openEnvelope,
   openOtpProvisioning,
   pairingTranscript,
   sealEnvelope,
@@ -51,6 +52,7 @@ const jobWatch = document.getElementById('job-watch');
 const jobChallengeEl = document.getElementById('job-challenge');
 const jobResponseEl = document.getElementById('job-response');
 const jobStateEl = document.getElementById('job-state');
+const jobResultEl = document.getElementById('job-result');
 
 let currentDevice = null;
 let currentKey = null;
@@ -97,6 +99,8 @@ function hideJobWatch() {
   jobChallengeEl.textContent = '';
   jobResponseEl.textContent = '';
   jobStateEl.textContent = '';
+  jobResultEl.hidden = true;
+  jobResultEl.textContent = '';
 }
 
 async function renderTotp() {
@@ -324,9 +328,49 @@ async function fetchJobStatus(jobId) {
   return body;
 }
 
+async function fetchJobResult(jobId) {
+  const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+  if (!deviceKeys) throw new Error('设备密钥缺失，请重新配对');
+  const ts = Math.floor(Date.now() / 1000);
+  const proof = toBase64Url(
+    await hmacWithKey(
+      deviceKeys.auth,
+      canonicalJson({
+        type: 'job-result-v1',
+        device_id: currentDevice.device_id,
+        job_id: jobId,
+        ts,
+      }),
+    ),
+  );
+  const response = await fetch(
+    `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/result`,
+    {
+      headers: {
+        'X-PhoneJob-Device': currentDevice.device_id,
+        'X-PhoneJob-Ts': String(ts),
+        'X-PhoneJob-Proof': proof,
+      },
+    },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  const opened = await openEnvelope(deviceKeys.enc, body);
+  if (
+    opened.header.type !== 'job-result-v1' ||
+    opened.header.job_id !== jobId ||
+    opened.header.device_id !== currentDevice.device_id
+  ) {
+    throw new Error('结果信封不匹配');
+  }
+  return JSON.parse(new TextDecoder().decode(opened.plaintext));
+}
+
 async function watchJob(jobId) {
   stopJobWatch();
   jobWatch.hidden = false;
+  jobResultEl.hidden = true;
+  jobResultEl.textContent = '';
   jobStateEl.textContent = '等待电脑确认…';
   const tick = async () => {
     try {
@@ -344,13 +388,26 @@ async function watchJob(jobId) {
       }
       if (status.state === 'QUEUED') {
         jobStateEl.textContent = '电脑已批准，等待执行';
-        stopJobWatch();
       } else if (status.state === 'REJECTED') {
         jobStateEl.textContent = '电脑已拒绝';
         stopJobWatch();
-      } else if (status.state === 'DONE') {
-        jobStateEl.textContent = '已完成';
+      } else if (status.state === 'DONE' || status.state === 'FAILED') {
         stopJobWatch();
+        jobStateEl.textContent =
+          status.state === 'DONE'
+            ? '已完成'
+            : `执行失败${status.error ? `：${status.error}` : ''}`;
+        try {
+          const result = await fetchJobResult(jobId);
+          jobResultEl.textContent = result.text || result.error || '(空结果)';
+          jobResultEl.hidden = false;
+          if (status.state === 'FAILED' && result.error) {
+            jobStateEl.textContent = `执行失败：${result.error}`;
+          }
+        } catch (err) {
+          jobResultEl.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
+          jobResultEl.hidden = false;
+        }
       } else {
         jobStateEl.textContent = '等待电脑确认…';
       }

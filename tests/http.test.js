@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PairingService } from '../bridge/pairing.js';
@@ -17,6 +17,7 @@ import {
   generatePairingKeyPair,
   hmacSha256Base64Url,
   importPeerPublicKey,
+  openEnvelope,
   openOtpProvisioning,
   pairingTranscript,
   sealEnvelope,
@@ -146,7 +147,7 @@ async function claimPhone(api, start) {
 }
 
 test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
-  const { api, local, otpSecret, inboxDir, workspace } = await setup(t);
+  const { api, local, jobs, otpSecret, inboxDir, workspace } = await setup(t);
 
   const healthBefore = await request(api, '/api/health');
   assert.equal(healthBefore.status, 200);
@@ -316,6 +317,59 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   });
   assert.equal(statusAfter.status, 200);
   assert.equal(parse(statusAfter).state, 'QUEUED');
+
+  const resultDir = path.join(inboxDir, 'done', jobId);
+  await mkdir(resultDir, { recursive: true });
+  await writeFile(
+    path.join(resultDir, 'result.json'),
+    JSON.stringify({
+      job_id: jobId,
+      status: 'done',
+      finished_at: new Date().toISOString(),
+      text: 'the answer',
+      files: [],
+      error: null,
+    }),
+  );
+  const completed = await jobs.scanResults();
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].state, 'DONE');
+
+  const finalStatus = await request(api, `/api/job/${jobId}`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(statusTs),
+      'X-PhoneJob-Proof': statusProof,
+    },
+  });
+  assert.equal(finalStatus.status, 200);
+  assert.equal(parse(finalStatus).state, 'DONE');
+
+  const resultTs = Math.floor(Date.now() / 1000);
+  const resultProof = await hmacSha256Base64Url(
+    phone.keys.kAuth,
+    canonicalJson({
+      type: 'job-result-v1',
+      device_id: phone.claim.device_id,
+      job_id: jobId,
+      ts: resultTs,
+    }),
+  );
+  const resultResponse = await request(api, `/api/job/${jobId}/result`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(resultTs),
+      'X-PhoneJob-Proof': resultProof,
+    },
+  });
+  assert.equal(resultResponse.status, 200, resultResponse.body);
+  const openedResult = await openEnvelope(phone.keys.kEnc, parse(resultResponse));
+  const resultBody = JSON.parse(Buffer.from(openedResult.plaintext).toString('utf8'));
+  assert.equal(resultBody.text, 'the answer');
+  const jobListDone = await request(local, '/api/jobs', {
+    headers: { 'X-PhoneJob-Admin': 'test-admin' },
+  });
+  assert.equal(parse(jobListDone).jobs[0].state, 'DONE');
 
   const healthAfter = await request(api, '/api/health');
   assert.equal(parse(healthAfter).paired_devices, 1);

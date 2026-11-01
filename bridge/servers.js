@@ -44,6 +44,8 @@ const ERROR_STATUS = {
   JOB_RESPONSE_INVALID: 400,
   JOB_STATUS_AUTH: 401,
   JOB_MOVE_FAILED: 500,
+  JOB_RESULT_NOT_READY: 409,
+  JOB_RESULT_BLOCKED: 409,
 };
 
 const CSP = [
@@ -312,6 +314,21 @@ export function createBridgeServers({
         }
         const result = await jobs.getForDevice({
           jobId: jobStatus[1],
+          deviceId: req.headers['x-phonejob-device'],
+          ts: Number(req.headers['x-phonejob-ts']),
+          proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
+        return;
+      }
+      const jobResult = url.pathname.match(/^\/api\/job\/([A-Za-z0-9_-]{8,64})\/result$/);
+      if (req.method === 'GET' && jobResult) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
+          return;
+        }
+        const result = await jobs.getResultForDevice({
+          jobId: jobResult[1],
           deviceId: req.headers['x-phonejob-device'],
           ts: Number(req.headers['x-phonejob-ts']),
           proof: req.headers['x-phonejob-proof'],

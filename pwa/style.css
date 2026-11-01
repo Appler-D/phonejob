@@ -119,6 +119,20 @@ textarea {
   border-top: 1px dashed var(--line);
 }
 
+#job-result {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 20rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.85rem;
+}
+
 button {
   margin-top: 0.9rem;
   padding: 0.65rem 1.1rem;

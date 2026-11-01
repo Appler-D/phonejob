@@ -65,8 +65,15 @@ const servers = createBridgeServers({
   workspaces: workspaceAllowlist,
 });
 
+let resultTimer = null;
+
 try {
   await servers.start();
+  resultTimer = setInterval(() => {
+    jobs.scanResults().catch((err) => {
+      console.error(`result scan failed: ${err.message}`);
+    });
+  }, 1000);
   console.log('phonejob bridge');
   console.log(`  api:   http://127.0.0.1:${servers.apiPort} (expose this via the tunnel only)`);
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
@@ -80,12 +87,14 @@ try {
 } catch (err) {
   console.error(`failed to start: ${err.message}`);
   process.exitCode = 1;
+  if (resultTimer) clearInterval(resultTimer);
   await servers.close();
   await jobStore.close();
   await deviceStore.close();
 }
 
 const shutdown = async () => {
+  if (resultTimer) clearInterval(resultTimer);
   await servers.close();
   await jobStore.close();
   await deviceStore.close();

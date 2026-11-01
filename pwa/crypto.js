@@ -135,6 +135,28 @@ export async function sealEnvelope(kEncKey, header, plaintext) {
   return { ...sealedHeader, ct: toBase64Url(ciphertext) };
 }
 
+export async function openEnvelope(kEncKey, envelope) {
+  if (
+    !envelope ||
+    typeof envelope !== 'object' ||
+    typeof envelope.ct !== 'string' ||
+    typeof envelope.nonce !== 'string'
+  ) {
+    throw new Error('Invalid envelope');
+  }
+  const { ct, ...header } = envelope;
+  const plaintext = await subtle.decrypt(
+    {
+      ...AES_PARAMS,
+      iv: fromBase64Url(header.nonce),
+      additionalData: encoder.encode(canonicalJson(header)),
+    },
+    kEncKey,
+    fromBase64Url(ct),
+  );
+  return { header, plaintext: new Uint8Array(plaintext) };
+}
+
 export async function openOtpProvisioning(kEnc, envelope) {
   if (
     !envelope ||
