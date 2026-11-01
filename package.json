@@ -1,0 +1,15 @@
+{
+  "name": "phonejob",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal end-to-end encrypted phone-to-PC task channel (design and P0 scaffold).",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "keys:init": "node bridge/key-init.js"
+  }
+}

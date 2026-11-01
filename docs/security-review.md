@@ -152,11 +152,14 @@ Cloudflare 终止），在时间窗内可重放换 token；`K_confirm` 同时用
 短有效期、只用于查询，响应最好也做 E2E 加密/认证。更彻底的做法是查询也用带 seq 的信封，
 不用 Bearer。
 
-**(d) TOTP 不是独立因子**
+**(d) TOTP 独立性与归属（已采纳 2026-11-01 决定）**
 
-`K_otp`、`K_confirm`、`K_enc` 都从同一个 `K_pair` 派生；拿到 `K_enc` 就等价于拿到 `K_otp`。
-“动态密码子”作为新鲜度/确认仪式没问题，但在威胁模型里不能当独立第二因子。要真独立，
-`K_otp` 必须单独配发/存储（例如手机生成、用 PC 公钥封装，PC 端 DPAPI 保存），不能从 `K_pair` 派生。
+原设计里 `K_otp`、`K_confirm`、`K_enc` 都从同一个 `K_pair` 派生，拿到 `K_enc` 就等价于拿到
+`K_otp`，TOTP 不是独立因子。现改为：**电脑端首次安装/初始化时生成 32B 随机 `K_otp`**，
+DPAPI 保存；配对确认后用 `K_enc` 加密下发给手机（AAD 绑定 `pair_id/device_id`）；
+手机只保存为不可导出 HMAC 密钥并执行 TOTP 公式，**不生成密码子**。这样 `K_enc`/`K_confirm`
+泄露不会自动暴露 `K_otp`，反之亦然。手机丢失仍需吊销设备并轮换 `K_otp`；多设备共享用户级
+`K_otp` 时，任一台丢失都应轮换并重新下发给剩余设备，未在线设备需重新配对。
 另外 TOTP 的 ±1 步要对**服务端当前时间**校验，不是只对信封里的 `ts`；需要时间同步端点/偏移量。
 
 **(e) 重放与 seq**
@@ -247,6 +250,7 @@ Cloudflare 终止），在时间窗内可重放换 token；`K_confirm` 同时用
 | P1-18 | 并发 5 任务 | 插件一次只 claim 一个；结果按 job_id 映射；`working/` 锁；队列上限；失败不串结果 |
 | P1-19 | 任务 TTL / 结果保留 | 启动时清理过期 pending/working/done；结果 7 天；审计 90 天；磁盘配额检查 |
 | P1-20 | 配对 claim 的竞争/DoS | 一次性 pair_id；120s 过期；每 IP/全局限流；失败可重新生成 QR；SAS 绑定 transcript；双方都确认 |
+| P1-21 | `K_otp` 下发/轮换 | 电脑生成；配对确认后经 `K_enc` 下发（AAD 绑定 pair_id/device_id）；手机存不可导出 HMAC 密钥；吊销/换机轮换并重新下发；离线设备需重配对 |
 
 ---
 
@@ -270,7 +274,7 @@ Cloudflare 终止），在时间窗内可重放换 token；`K_confirm` 同时用
 ```text
 K_pair    = ECDH(phone_priv, pc_pub)                       // X25519 或 P-256
 K_sas     = HKDF(K_pair, salt=pair_id, info="phonejob/v1/sas")
-K_otp     = HKDF(K_pair, salt=pair_id, info="phonejob/v1/otp")
+K_otp     = random(32) at PC first install; DPAPI; provisioned to phone via K_enc after pairing
 K_confirm = HKDF(K_pair, salt=pair_id, info="phonejob/v1/confirm")
 K_enc     = HKDF(K_pair, salt=pair_id, info="phonejob/v1/enc")
 K_auth    = HKDF(K_pair, salt=pair_id, info="phonejob/v1/auth")
@@ -294,7 +298,8 @@ chunk_aad = JCS({ job_id, file_index, file_sha256, chunk_index, total_chunks })
 ```
 
 要点：AAD 不循环、所有路由字段都被认证；挑战响应绑定 job hash；会话与挑战响应用不同密钥；
-TOTP 对服务端时间校验。若不做独立 `K_otp`，请在威胁模型里把 TOTP 写成“新鲜度/仪式”，不要写成独立第二因子。
+TOTP 对服务端时间校验。`K_otp` 由电脑生成、DPAPI 保存、配对时下发；手机只计算，不生成。
+多设备共享用户级 `K_otp`，吊销任一设备时轮换并重新下发剩余设备。
 
 ---
 
@@ -334,10 +339,13 @@ TOTP 对服务端时间校验。若不做独立 `K_otp`，请在威胁模型里�
 14. PC 远控场景 → 明确记录“不能防”；高风险可用 Windows Hello（如实现）。
 15. 磁盘/队列打满、并发 5 任务、插件崩溃后恢复 → 有界且不串结果。
 16. 备份恢复（同用户/换用户）→ 预期结果；密钥不可恢复时有重新配对提示。
+17. `K_otp` 由电脑生成并下发：手机端不生成；轮换后旧码失效；未收到下发的设备不能提交。
 
 ---
 
 ## 7. 需要用户先拍板的决策
+
+> `K_otp` 归属已于 2026-11-01 定案：电脑生成，手机只计算；不再作为待定项。
 
 1. **PWA 从哪来**：独立稳定 origin（推荐）还是 bridge 同隧道提供？
 2. **隧道**：Cloudflare named tunnel / Tailscale Funnel / 自建 VPS / 先用 quick tunnel 做实验？
@@ -347,5 +355,7 @@ TOTP 对服务端时间校验。若不做独立 `K_otp`，请在威胁模型里�
 6. **自动放行**：保持关闭（推荐），还是允许 `ask + low` 白名单？
 
 ---
+
+*修订：2026-11-01 — `K_otp` 改为电脑生成并下发；P0-4(d) 关闭。*
 
 *本评审基于本机环境与公开文档，不构成法律或安全认证意见；实现前建议按第 5 节逐项 spike。*

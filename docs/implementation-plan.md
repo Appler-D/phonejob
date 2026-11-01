@@ -1,6 +1,6 @@
 # PhoneJob · 手机 → 电脑任务通道 实现方案
 
-> **状态**：v1.0 设计稿（2026-10-31），尚未实现，未经独立安全评审；不要直接部署到公网。
+> **状态**：v1.1 设计稿（2026-11-01），尚未实现，未经独立安全评审；不要直接部署到公网。v1.1 起 `K_otp` 由电脑端生成并下发，详见 §7.1；其余评审项见 [security-review.md](security-review.md)。
 > **许可**：本仓库采用 PhoneJob Noncommercial License 1.0（见 [LICENSE](../LICENSE)）。
 > **路径占位**：文中 `<WORKSPACE>`、`<DSH_INSTALL>`、`<PHONEJOB_HOME>`、`<BACKUP_DIR>` 需替换为本机实际路径。
 > **交接对象**：任意具备文件读写与命令执行能力的实现 agent。
@@ -39,7 +39,7 @@
 
 | 银行网银 | 本方案 | 说明 |
 |---|---|---|
-| U 盾 / 动态令牌 | 手机端 `K_otp`（32B） | 配对时写入，只存在手机安全存储与电脑 DPAPI 保护的文件里 |
+| U 盾 / 动态令牌 | 电脑端 `K_otp`（32B） | 首次安装/初始化时由电脑生成，DPAPI 保存；配对时经 E2E 下发给手机；手机只保存为不可导出 HMAC 密钥并计算 TOTP，不生成密码子 |
 | 交易要素 | `job.json` 的 intent/text/files 的 SHA-256 | 挑战码绑定这份摘要，改一个字都对不上 |
 | 交易挑战码 | 电脑随机 6 位 `challenge` | 显示在电脑屏幕上，只对这一次任务有效 |
 | 交易确认码 | 手机计算 `HMAC(K_confirm, challenge)` 前 8 位 Base32 | 用户把手机上的码抄进电脑 |
@@ -92,7 +92,7 @@
   3. `#/new` 新建任务（意图选择、文本、文件、目标程序）
   4. `#/job/:id` 详情（挑战码、确认码输入、结果下载）
   5. `#/devices` 设备与吊销
-- 存储：IndexedDB；`K_otp` / `K_confirm` 以**不可导出 CryptoKey** 形式保存（`extractable:false`）。
+- 存储：IndexedDB；`K_otp` / `K_confirm` 以**不可导出 CryptoKey** 形式保存（`extractable:false`）。`K_otp` 由电脑端生成并在配对时下发；手机端只加载 TOTP 公式并保存为不可导出 HMAC 密钥，不生成密码子。
 - 推送：Web Push（仅 HTTPS 源可用）；无推送权限时前端 30s 轮询。
 
 ### 4.2 隧道 / 中继（不自研服务器）
@@ -210,28 +210,34 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ### 7.1 配对（一次性，带 SAS 人眼校验）
 1. PC 端 bridge 生成临时 X25519 密钥对，显示二维码：`{bridge_url, pair_id, pc_pub, nonce, expires=120s}`。
 2. 手机扫码 → 生成自己的 X25519 密钥对 → 双方 ECDH 出 `K_pair = HKDF(X25519_shared, salt=pair_id, info="phonejob-v1")`。
-3. PC 与手机**各自显示 6 位 SAS 码**（由 `K_pair` 派生），用户核对两侧一致后，在 PC 点「确认配对」。
+3. PC 与手机**各自显示 6 位 SAS 码**（由 `K_pair` 与配对 transcript 派生），用户核对两侧一致后，在 PC 点「确认配对」。
 4. 派生并存储：
-   - `K_otp  = HKDF(K_pair, info="otp")`
-   - `K_confirm = HKDF(K_pair, info="confirm")`
-   - `K_enc  = HKDF(K_pair, info="enc")`
-5. 设备记录落 SQLite（device_id、公钥、创建时间、最后活跃、吊销位）。
+   - `K_confirm = HKDF(K_pair, salt=pair_id, info="phonejob/v1/confirm")`
+   - `K_enc  = HKDF(K_pair, salt=pair_id, info="phonejob/v1/enc")`
+   - `K_otp` **不从 `K_pair` 派生**：电脑端在首次安装/初始化时生成 32B 随机密码子并 DPAPI 保存；
+     配对确认后由电脑用 `K_enc` 加密下发给手机（AAD 绑定 `pair_id/device_id`），
+     手机导入为不可导出 HMAC `CryptoKey`。
+5. 设备记录落 SQLite（device_id、公钥、创建时间、最后活跃、吊销位、密码子版本）。
 
 > 安全要点：SAS 校验挡住隧道层 MITM；配对码 120s 过期，一次性。
+>
+> 密码子生命周期：电脑生成 → DPAPI 保存 → 配对确认后下发 → 手机只计算不生成；
+> 吊销任一设备时电脑轮换 `K_otp` 并重新下发给剩余设备，未在线的设备需重新配对。
+> 电脑端是密码子的唯一生成者，手机端不上传、不生成密码子。
 
 ### 7.2 每条消息的校验链（顺序不可调换）
 1. **解密**：AES-256-GCM(`K_enc`, nonce, AAD=header) → 失败即丢弃，不落盘。
 2. **时间窗**：`|now - ts| ≤ 120s`。
 3. **防重放**：`(device_id, seq)` 单调递增 + `(device_id, nonce)` 最近 10k 条缓存；重复即拒。
-4. **动态密码子**：`TOTP = HOTP(K_otp, floor(ts/30))` 取 6 位，允许 ±1 步；不等即拒（计一次失败）。
+4. **动态密码子**：`TOTP = HOTP(K_otp, floor(now/30))` 取 6 位，按服务端当前时间允许 ±1 步；`ts` 只用于时间窗。不等即拒（计一次失败）。`K_otp` 由电脑生成并保存，手机只执行公式。
 5. **风险判定**：`intent ∈ {shell, file, mixed}` 或路径越界 → `risk=high`。
 
 以上全过才进入 `WAITING_CONFIRM`。
 
 ### 7.3 挑战码机制（"只有电脑确认正确才执行"）
-1. bridge 计算 `challenge = 6 位随机数`（`crypto.randomInt(100000,999999)`），与 `job_hash = SHA256(canonical(job.json))` 一起存入待确认表。
+1. bridge 计算 `challenge = 6 位随机数`（`crypto.randomInt(100000,1000000)`），与 `job_hash = SHA256(canonical(job.json))` 一起存入待确认表。
 2. **电脑屏幕**弹出确认窗（托盘 + 本地 `127.0.0.1:7789/confirm` 页面），显示：任务摘要、文件列表与短哈希、挑战码、输入框。
-3. 手机详情页同时显示同一个挑战码（经加密通道下发）→ 用户在手机上打开自己的 App，得到 `response = Base32(HMAC-SHA256(K_confirm, challenge))[0:8]`。
+3. 手机详情页同时显示同一个挑战码（经加密通道下发）→ 用户在手机上打开自己的 App，得到 `response = Base32(HMAC-SHA256(K_confirm, "confirm-v1" || job_hash || challenge))[0:8]`。
 4. 用户把 8 位 `response` 抄进电脑确认窗 → bridge 校验 → 通过后显示「批准执行」按钮。
 5. 点击批准 → bridge 把 job 移入 `approved/`，状态 `QUEUED`。
 
@@ -241,11 +247,11 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | 用途 | 算法 |
 |---|---|
 | 密钥协商 | X25519（WebCrypto ECDH P-256 可替代，但两端必须一致；`DEFAULT` 用 X25519，Node 端 `crypto.diffieHellman`，浏览器端 `X25519` 若不可用则降级 P-256） |
-| KDF | HKDF-SHA256，32B 输出 |
+| KDF | HKDF-SHA256，salt = pair_id，info 按用途域分离，32B 输出 |
 | 对称加密 | AES-256-GCM，12B 随机 nonce，AAD = 规范化 header JSON |
 | 消息认证 | GCM tag（128bit）+ 外层 TOTP |
-| 动态密码子 | HOTP/TOTP RFC 6238，SHA-1，6 位，30s，±1 步 |
-| 挑战响应 | HMAC-SHA256(K_confirm, challenge) → Base32 前 8 位 |
+| 动态密码子 | HOTP/TOTP RFC 6238，SHA-1，6 位，30s，±1 步；`K_otp` 32B 由电脑首次安装生成，DPAPI 保存，配对时经 `K_enc` 下发，手机只计算 |
+| 挑战响应 | HMAC-SHA256(K_confirm, "confirm-v1" \|\| job_hash \|\| challenge) → Base32 前 8 位 |
 | 文件完整性 | SHA-256，落盘后复核 |
 | 电脑端密钥存储 | Windows DPAPI（`CryptProtectData`，用户级），文件 `%DSH_HOME%\phonejob\keys.bin` |
 
@@ -270,13 +276,14 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ### 7.8 威胁模型
 | 威胁 | 对策 |
 |---|---|
-| 隧道/中继被攻破 | E2E 加密 + 签名；只有密文 |
-| 手机丢失 | 设备吊销（PC 端一键）+ 挑战码仍需人确认 |
+| 隧道/中继被攻破 | E2E 加密 + PWA 独立 origin/SRI；隧道只提供 API，不能替换客户端代码 |
+| 手机丢失 | 设备吊销（PC 端一键）+ 轮换 `K_otp` + 挑战码仍需人确认 |
 | 重放旧任务 | seq 单调 + nonce 缓存 + 时间窗 |
 | 伪造任务 | 无 K_otp 算不出 TOTP；无 K_enc 解不开 |
 | 中间人替换文件 | 文件 SHA-256 在 job.json 内，落盘后复核 |
-| 恶意文件诱导执行 | 扩展名白名单 + DSH 只读 + 高风险二次确认 |
-| 电脑被远控 | 挑战码只在**本地屏幕**显示，走不通网络 |
+| 恶意文件诱导执行 | 扩展名白名单 + intent 工具限制 + 沙箱 + 高风险二次确认 |
+| 任务文本/文件提示注入 | 声明为不可信数据 + 按 intent 限制工具 + 高风险人工批准 |
+| 电脑被远控 | 挑战码挡不住远控；只能依赖电脑前的人/Windows Hello，威胁模型不防已失陷的 PC |
 | DoS | 限流 + 队列上限 + 单任务 TTL 24h |
 
 ---
@@ -287,7 +294,9 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 返回 `{ok, version, paired_devices}`（不含敏感信息） |
+| POST | `/api/session` | 用 `K_auth` + 服务端 nonce 换 15 分钟 Bearer token（仅查询） |
 | POST | `/api/pair/claim` | 手机提交公钥 + SAS 证明 |
+| POST | `/api/pair/provision` | 配对确认后，电脑用 `K_enc` 下发电脑生成的 `K_otp` |
 | POST | `/api/job` | 提交密文信封（≤ 1MB 元数据；文件走分片） |
 | PUT | `/api/job/:id/file/:idx` | 分片上传密文块（`Content-Range`） |
 | GET | `/api/job/:id` | 查询状态（需设备会话令牌） |
@@ -295,7 +304,9 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
 ### 8.2 设备会话令牌
-- 每次连接先 `POST /api/session` 用 `HMAC(K_confirm, ts)` 换 15 分钟 Bearer token。
+- 每次连接先 `POST /api/session`：服务端发一次性 nonce，手机用
+  `K_auth = HKDF(K_pair, salt=pair_id, info="phonejob/v1/auth")` 计算
+  `HMAC(K_auth, "session-v1" || device_id || nonce || ts)`，换 15 分钟 Bearer token。
 - Bearer token 只用于查询，**不能**提交新任务（提交必须带完整信封）。
 
 ### 8.3 分片上传
@@ -347,13 +358,16 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ## 12. 部署与运维
 
 ```powershell
-# 1) 安装 bridge（录成 Windows 计划任务：登录时启动）
+# 1) 首次初始化：电脑生成本用户专属密码子，DPAPI 保存到 keys.bin
+node <PHONEJOB_HOME>\bridge\key-init.js
+
+# 2) 安装 bridge（录成 Windows 计划任务：登录时启动）
 node <PHONEJOB_HOME>\bridge\index.js
 
-# 2) 起隧道（DEFAULT: cloudflared quick tunnel）
-cloudflared tunnel --url http://127.0.0.1:7788
+# 3) 起隧道（必须固定 hostname；quick tunnel 仅实验，不能用于密钥/推送）
+cloudflared tunnel run phonejob
 
-# 3) 扫码配对（bridge 托盘 → 显示二维码）
+# 4) 扫码配对（bridge 托盘 → 显示二维码）
 
 # 4) 安装 DSH 插件
 & '<DSH_INSTALL>\resources\runtime\cli\bin\dsh.cmd' plugin --profile desktop add link:<PHONEJOB_HOME>\plugin
@@ -361,7 +375,7 @@ cloudflared tunnel --url http://127.0.0.1:7788
 
 - 防火墙：只需允许 `cloudflared` 出站；**不开放任何入站端口**。
 - 备份：`phonejob.sqlite` + `keys.bin` 每日备份到 `<BACKUP_DIR>`。
-- 吊销：托盘「解除全部设备」→ 清空设备表 + 轮换 `K_pair`（需重新配对）。
+- 吊销：托盘「解除全部设备」→ 清空设备表 + 轮换 `K_pair` 与 `K_otp`（需重新配对/下发）。
 - 日志：`%DSH_HOME%\phonejob\audit.jsonl`，保留 90 天。
 
 ---
@@ -370,7 +384,7 @@ cloudflared tunnel --url http://127.0.0.1:7788
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| P0 骨架 | bridge 起服务、健康检查、隧道连通、二维码配对（SAS） | 手机能配对成功；错 SAS 被拒 |
+| P0 骨架 | bridge 起服务、健康检查、隧道连通、二维码配对（SAS）、电脑生成 `K_otp` | 手机能配对成功；错 SAS 被拒；手机不生成密码子 |
 | P1 任务通道 | 信封加密、TOTP、防重放、文件分片上传、收件箱落盘 | 篡改/重放/错误密码子全部被拒 |
 | P2 人工确认 | 托盘 + 确认窗 + 挑战码/确认码 | 未输入正确确认码无法进入 `approved/` |
 | P3 DSH 执行 | 插件认领、会话唤醒、`phone_job_reply`、结果回传 | 一条完整"发题→解→回传"闭环 |
@@ -434,13 +448,15 @@ cloudflared tunnel --url http://127.0.0.1:7788
 
 | 问题 | 默认 |
 |---|---|
-| 隧道选型 | cloudflared quick tunnel（可换 named tunnel/自建中继） |
+| 隧道选型 | 固定 hostname（named tunnel / Tailscale Funnel / 自建）；quick tunnel 仅实验，不能用于密钥/推送 |
+| 密码子归属 | 电脑首次安装/初始化生成 32B `K_otp`，DPAPI 保存；配对时下发；手机不生成 |
 | 手机 UI 框架 | 原生 JS（无构建链） |
 | 会话归属 | 单独会话「手机任务」，不污染现有会话 |
 | 自动放行 | 关闭；仅 `intent=ask` 且 `risk=low` 可开启白名单 |
 | 结果大小 | 20MB/任务 |
-| 多设备 | 最多 5 台，各自独立 `K_pair` |
+| 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
+| 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.0 · 2026-10-31 · 可直接交付实现*
+*版本 v1.1 · 2026-11-01 · `K_otp` 改为电脑生成并下发；其余评审项待定*
