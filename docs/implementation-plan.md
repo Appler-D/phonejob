@@ -323,8 +323,8 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 - Bearer token 只用于查询，**不能**提交新任务（提交必须带完整信封）。
 
 ### 8.3 分片上传
-- 每片 ≤ 1MB，独立 AES-GCM 加密，`job_id + idx + total` 作 AAD。
-- 全部收齐后 bridge 解密合并 → 复核 sha256 → 才置 `UPLOADED`。
+- 当前实现每片 512KB，独立 AES-GCM 加密；AAD = canonical(`{v, type:'job-file-chunk-v1', job_id, file_index, file_sha256, chunk_index, total_chunks, nonce}`)。
+- 上传请求使用设备签名 `job-upload-v1`；全部收齐后 bridge 合并 → 复核文件 SHA-256/大小/扩展名 → 写 `pending/<job_id>/files/` → 状态 `WAITING_CONFIRM`。
 
 ---
 
@@ -475,8 +475,8 @@ cloudflared tunnel run phonejob
 | 结果大小 | 文本 ≤200KB/任务；结果文件未实现 |
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
-| PWA 任务表单 | 已实现文本任务；工作区从配对二维码预填；文件分片未实现 |
-| 文件通道 | P1 暂不支持；`job.files` 非空拒绝，下一阶段做分片 |
+| PWA 任务表单 | 已实现文本 + 附件；工作区从配对二维码预填；512KB 分片上传 |
+| 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核 |
 | 结果文件 | `result.files` 非空视为失败，下一阶段 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED`；DSH 执行下一步 |
@@ -485,4 +485,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v1.6 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；job 校验；PWA 发送任务 + 挑战响应；电脑审批；结果加密回传；其余评审项待定*
+*版本 v1.7 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PC 配对首页/QR；job 校验；PWA 发送任务 + 附件分片；电脑审批；结果加密回传；其余评审项待定*

@@ -122,6 +122,27 @@ test('PWA seals a job envelope the bridge can open', async () => {
   await assert.rejects(() => crypto.subtle.exportKey('raw', hmacKey));
 });
 
+test('PWA and bridge seal and open file chunks', async () => {
+  const { pcKeys, phoneKeys } = await keysForBothSides();
+  const bytes = new Uint8Array(1024).fill(7);
+  const meta = {
+    jobId: 'job_test_file',
+    fileIndex: 0,
+    fileSha256: 'A'.repeat(43),
+    chunkIndex: 0,
+    totalChunks: 1,
+  };
+  const sealed = await bridge.sealFileChunk(pcKeys.kEnc, meta, bytes);
+  const aesKey = await pwa.importAesKey(phoneKeys.kEnc);
+  const opened = await pwa.openFileChunk(aesKey, sealed);
+  assert.deepEqual(Array.from(opened.bytes), Array.from(bytes));
+
+  const pwaSealed = await pwa.sealFileChunk(aesKey, meta, bytes);
+  const bridgeOpened = await bridge.openFileChunk(phoneKeys.kEnc, pwaSealed);
+  assert.deepEqual(Array.from(bridgeOpened.bytes), Array.from(bytes));
+  await assert.rejects(() => pwa.openFileChunk(aesKey, { ...sealed, file_index: 1 }));
+});
+
 test('PWA opens a result envelope sealed by the bridge', async () => {
   const { pcKeys, phoneKeys } = await keysForBothSides();
   const header = {

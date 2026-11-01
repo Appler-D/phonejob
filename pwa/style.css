@@ -107,6 +107,16 @@ textarea {
   min-height: 5rem;
 }
 
+#job-files {
+  padding: 0.45rem 0;
+  border: 0;
+  font-size: 0.9rem;
+}
+
+#job-files-list {
+  margin: 0.25rem 0 0;
+}
+
 #job-panel {
   margin-top: 1.5rem;
   padding-top: 1.25rem;

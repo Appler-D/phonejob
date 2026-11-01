@@ -17,6 +17,7 @@ import {
   openOtpProvisioning,
   pairingTranscript,
   sealEnvelope,
+  sealFileChunk,
   toBase64Url,
   totpWithKey,
 } from './crypto.js';
@@ -45,6 +46,8 @@ const rePairButton = document.getElementById('repair-button');
 const jobWorkspace = document.getElementById('job-workspace');
 const jobIntent = document.getElementById('job-intent');
 const jobText = document.getElementById('job-text');
+const jobFiles = document.getElementById('job-files');
+const jobFilesList = document.getElementById('job-files-list');
 const jobSend = document.getElementById('job-send');
 const jobStatusEl = document.getElementById('job-status');
 const jobErrorEl = document.getElementById('job-error');
@@ -53,6 +56,8 @@ const jobChallengeEl = document.getElementById('job-challenge');
 const jobResponseEl = document.getElementById('job-response');
 const jobStateEl = document.getElementById('job-state');
 const jobResultEl = document.getElementById('job-result');
+
+const CHUNK_SIZE = 512 * 1024;
 
 let currentDevice = null;
 let currentKey = null;
@@ -73,6 +78,18 @@ function setJobStatus(text) {
 
 function setJobError(text) {
   jobErrorEl.textContent = text;
+}
+
+function formatBytes(value) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderSelectedFiles(files) {
+  jobFilesList.textContent = files.length
+    ? files.map((file) => `${file.name} (${formatBytes(file.size)})`).join('、')
+    : '';
 }
 
 function delay(ms) {
@@ -143,6 +160,8 @@ function showPair() {
   setError('');
   setJobStatus('');
   setJobError('');
+  jobFiles.value = '';
+  renderSelectedFiles([]);
   hideJobWatch();
 }
 
@@ -386,7 +405,9 @@ async function watchJob(jobId) {
           );
         }
       }
-      if (status.state === 'QUEUED') {
+      if (status.state === 'UPLOADING') {
+        jobStateEl.textContent = '正在接收文件…';
+      } else if (status.state === 'QUEUED') {
         jobStateEl.textContent = '电脑已批准，等待执行';
       } else if (status.state === 'REJECTED') {
         jobStateEl.textContent = '电脑已拒绝';
@@ -419,6 +440,65 @@ async function watchJob(jobId) {
   tick();
 }
 
+async function uploadJobFiles(jobId, files, deviceKeys) {
+  const totalChunks = files.reduce(
+    (sum, file) => sum + Math.ceil(file.size / CHUNK_SIZE),
+    0,
+  );
+  let sent = 0;
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    const chunks = Math.ceil(file.size / CHUNK_SIZE);
+    for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
+      const start = chunkIndex * CHUNK_SIZE;
+      const bytes = new Uint8Array(
+        await file.file.slice(start, start + CHUNK_SIZE).arrayBuffer(),
+      );
+      const envelope = await sealFileChunk(
+        deviceKeys.enc,
+        {
+          jobId,
+          fileIndex,
+          fileSha256: file.sha256,
+          chunkIndex,
+          totalChunks: chunks,
+        },
+        bytes,
+      );
+      const ts = Math.floor(Date.now() / 1000);
+      const proof = toBase64Url(
+        await hmacWithKey(
+          deviceKeys.auth,
+          canonicalJson({
+            type: 'job-upload-v1',
+            device_id: currentDevice.device_id,
+            job_id: jobId,
+            ts,
+          }),
+        ),
+      );
+      const response = await fetch(
+        `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/file/${fileIndex}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-PhoneJob-Device': currentDevice.device_id,
+            'X-PhoneJob-Ts': String(ts),
+            'X-PhoneJob-Proof': proof,
+          },
+          body: JSON.stringify(envelope),
+        },
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+      sent += 1;
+      setJobStatus(`上传中 ${sent}/${totalChunks}`);
+      if (body.state === 'WAITING_CONFIRM') return;
+    }
+  }
+}
+
 async function sendJob() {
   if (!currentDevice || !currentKey) {
     setJobError('请先完成配对');
@@ -429,12 +509,13 @@ async function sendJob() {
   const workspace = jobWorkspace.value.trim();
   const text = jobText.value.trim();
   const intent = jobIntent.value;
+  const selected = [...jobFiles.files];
   if (!workspace) {
     setJobError('请填写工作区');
     return;
   }
-  if (!text) {
-    setJobError('请填写任务内容');
+  if (!text && selected.length === 0) {
+    setJobError('请填写任务内容或选择附件');
     return;
   }
   const deviceKeys = await getDeviceKeys(currentDevice.device_id);
@@ -445,6 +526,17 @@ async function sendJob() {
 
   jobSend.disabled = true;
   try {
+    const fileMeta = [];
+    if (selected.length > 0) setJobStatus('计算文件校验…');
+    for (const file of selected) {
+      if (file.size > 50 * 1024 * 1024) throw new Error(`${file.name} 超过 50MB`);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const sha256 = toBase64Url(
+        new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+      );
+      fileMeta.push({ file, name: file.name, size: file.size, sha256 });
+    }
+
     const seq = Number(currentDevice.seq ?? 0) + 1;
     const now = Date.now();
     const jobId = crypto.randomUUID();
@@ -463,7 +555,7 @@ async function sendJob() {
       target: { workspace, preset: 'default', session: null },
       intent,
       text,
-      files: [],
+      files: fileMeta.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
       reply: { want: 'text', max_bytes: 20 * 1024 * 1024 },
     };
     const envelope = await sealEnvelope(deviceKeys.enc, header, JSON.stringify(job));
@@ -479,6 +571,11 @@ async function sendJob() {
     await putDevice(currentDevice);
     setJobStatus(`已提交 ${body.job_id}，状态 ${body.state}`);
     jobText.value = '';
+    jobFiles.value = '';
+    renderSelectedFiles([]);
+    if (body.state === 'UPLOADING') {
+      await uploadJobFiles(body.job_id, fileMeta, deviceKeys);
+    }
     watchJob(body.job_id);
   } catch (err) {
     setJobError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
@@ -513,6 +610,7 @@ async function init() {
 }
 
 pairButton.addEventListener('click', startPairing);
+jobFiles.addEventListener('change', () => renderSelectedFiles([...jobFiles.files]));
 jobSend.addEventListener('click', sendJob);
 rePairButton.addEventListener('click', async () => {
   if (currentDevice) {

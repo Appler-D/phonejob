@@ -48,6 +48,9 @@
         </select>
         <label for="job-text">任务</label>
         <textarea id="job-text" rows="4" maxlength="60000" placeholder="描述要电脑执行的任务"></textarea>
+        <label for="job-files">附件（可选）</label>
+        <input id="job-files" type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.docx,.xlsx,.pptx,.txt,.md,.zip">
+        <p id="job-files-list" class="hint"></p>
         <button id="job-send" type="button">发送任务</button>
         <p id="job-status" class="status"></p>
         <p id="job-error" class="error" role="alert"></p>

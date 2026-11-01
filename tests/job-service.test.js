@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import {
   hmacSha256Base64Url,
   openEnvelope,
   sealEnvelope,
+  sealFileChunk,
 } from '../bridge/crypto.js';
 import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
@@ -168,11 +170,11 @@ test('time window, workspace, files, and job binding are enforced', async (t) =>
     secret: f2.otpSecret,
     workspace: f2.workspace,
     now,
-    files: [{ name: 'x.txt' }],
+    files: [{ name: 'x.exe', size: 4, sha256: 'A'.repeat(43) }],
   });
   await assert.rejects(
     () => f2.service.submit(withFile),
-    (err) => err.code === 'JOB_FILES_UNSUPPORTED',
+    (err) => err.code === 'JOB_FILE_TYPE',
   );
 
   const mismatch = await makeEnvelope({
@@ -447,6 +449,141 @@ test('result is not available before the job is completed', async (t) => {
     () => f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof }),
     (err) => err.code === 'JOB_RESULT_NOT_READY',
   );
+});
+
+test('file job uploads chunks, verifies hash, and moves to pending', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_file';
+  const content = Buffer.alloc(600 * 1024, 0x5a);
+  const sha256 = createHash('sha256').update(content).digest('base64url');
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+    files: [{ name: 'note.txt', size: content.length, sha256 }],
+  });
+  const submitted = await f.service.submit(envelope);
+  assert.equal(submitted.state, 'UPLOADING');
+  assert.equal(submitted.files[0].chunks, 2);
+
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const chunk0 = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId, fileIndex: 0, fileSha256: sha256, chunkIndex: 0, totalChunks: 2 },
+    content.subarray(0, 512 * 1024),
+  );
+  const first = await f.service.uploadChunk({
+    jobId,
+    fileIndex: 0,
+    envelope: chunk0,
+    deviceId: DEVICE_ID,
+    ts,
+    proof,
+  });
+  assert.equal(first.state, 'UPLOADING');
+  assert.equal(first.received, 1);
+  assert.equal(first.total, 2);
+
+  const chunk1 = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId, fileIndex: 0, fileSha256: sha256, chunkIndex: 1, totalChunks: 2 },
+    content.subarray(512 * 1024),
+  );
+  const second = await f.service.uploadChunk({
+    jobId,
+    fileIndex: 0,
+    envelope: chunk1,
+    deviceId: DEVICE_ID,
+    ts,
+    proof,
+  });
+  assert.equal(second.state, 'WAITING_CONFIRM');
+
+  const job = await f.service.getJob(jobId);
+  assert.equal(job.state, 'WAITING_CONFIRM');
+  assert.match(job.challenge, /^\d{6}$/);
+  const jobJson = JSON.parse(
+    await readFile(path.join(f.inbox, 'pending', jobId, 'job.json'), 'utf8'),
+  );
+  assert.equal(jobJson.files[0].name, 'note.txt');
+  assert.equal(jobJson.files[0].local_path, 'files/0-note.txt');
+  const stored = await readFile(path.join(f.inbox, 'pending', jobId, 'files', '0-note.txt'));
+  assert.equal(stored.equals(content), true);
+
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  const approved = await readFile(path.join(f.inbox, 'approved', jobId, 'files', '0-note.txt'));
+  assert.equal(approved.equals(content), true);
+});
+
+test('unsafe file metadata and corrupted chunks are rejected', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+
+  const exe = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_exe',
+    seq: 1,
+    files: [{ name: 'a.exe', size: 4, sha256: 'A'.repeat(43) }],
+  });
+  await assert.rejects(() => f.service.submit(exe), (err) => err.code === 'JOB_FILE_TYPE');
+
+  const reserved = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_reserved',
+    seq: 1,
+    files: [{ name: 'CON.txt', size: 4, sha256: 'A'.repeat(43) }],
+  });
+  await assert.rejects(() => f.service.submit(reserved), (err) => err.code === 'JOB_FILE_NAME');
+
+  const content = Buffer.from('good');
+  const sha256 = createHash('sha256').update(content).digest('base64url');
+  const jobId = 'job_test_badchunk';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+    files: [{ name: 'note.txt', size: content.length, sha256 }],
+  });
+  await f.service.submit(envelope);
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const badChunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId, fileIndex: 0, fileSha256: sha256, chunkIndex: 0, totalChunks: 1 },
+    Buffer.from('evil'),
+  );
+  await assert.rejects(
+    () =>
+      f.service.uploadChunk({
+        jobId,
+        fileIndex: 0,
+        envelope: badChunk,
+        deviceId: DEVICE_ID,
+        ts,
+        proof,
+      }),
+    (err) => err.code === 'JOB_FILE_HASH_MISMATCH',
+  );
+  assert.equal((await f.service.getJob(jobId)).state, 'UPLOADING');
 });
 
 test('non-ask intents are high risk', async (t) => {

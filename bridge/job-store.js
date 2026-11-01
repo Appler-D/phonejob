@@ -48,6 +48,17 @@ export class MemoryJobStore {
     return true;
   }
 
+  async completeUpload({ jobId, challenge, jobHash, inboxPath, updatedAt }) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state !== 'UPLOADING') return false;
+    job.state = 'WAITING_CONFIRM';
+    job.challenge = challenge;
+    job.job_hash = jobHash;
+    job.inbox_path = inboxPath;
+    job.updated_at = updatedAt;
+    return true;
+  }
+
   async close() {}
 }
 
@@ -176,6 +187,17 @@ export class SqliteJobStore {
         WHERE job_id = ? AND state IN ('QUEUED', 'RUNNING')
       `)
       .run(state, resultError, finishedAt, finishedAt, jobId);
+    return result.changes > 0;
+  }
+
+  async completeUpload({ jobId, challenge, jobHash, inboxPath, updatedAt }) {
+    const result = this.db
+      .prepare(`
+        UPDATE jobs
+        SET state = 'WAITING_CONFIRM', challenge = ?, job_hash = ?, inbox_path = ?, updated_at = ?
+        WHERE job_id = ? AND state = 'UPLOADING'
+      `)
+      .run(challenge, jobHash, inboxPath, updatedAt, jobId);
     return result.changes > 0;
   }
 

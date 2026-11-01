@@ -36,7 +36,6 @@ const ERROR_STATUS = {
   JOB_TIME_WINDOW: 400,
   JOB_OTP_INVALID: 400,
   JOB_WORKSPACE_NOT_ALLOWED: 400,
-  JOB_FILES_UNSUPPORTED: 400,
   JOB_REPLAY: 409,
   JOB_INBOX_FAILED: 500,
   JOB_NOT_FOUND: 404,
@@ -46,6 +45,15 @@ const ERROR_STATUS = {
   JOB_MOVE_FAILED: 500,
   JOB_RESULT_NOT_READY: 409,
   JOB_RESULT_BLOCKED: 409,
+  JOB_FILES_INVALID: 400,
+  JOB_FILE_NAME: 400,
+  JOB_FILE_TYPE: 400,
+  JOB_FILE_SIZE: 400,
+  JOB_FILE_HASH: 400,
+  JOB_FILE_CHUNK: 400,
+  JOB_FILE_HASH_MISMATCH: 400,
+  JOB_NOT_UPLOADING: 409,
+  JOB_UPLOAD_STATE: 409,
 };
 
 const CSP = [
@@ -221,7 +229,7 @@ export function createBridgeServers({
     if (!allowedPwaOrigin || req.headers.origin !== allowedPwaOrigin) return {};
     return {
       'Access-Control-Allow-Origin': allowedPwaOrigin,
-      'Access-Control-Allow-Methods': 'GET, POST',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT',
       'Access-Control-Allow-Headers':
         'Content-Type, X-PhoneJob-Device, X-PhoneJob-Ts, X-PhoneJob-Proof',
       'Access-Control-Max-Age': '600',
@@ -329,6 +337,24 @@ export function createBridgeServers({
         }
         const result = await jobs.getResultForDevice({
           jobId: jobResult[1],
+          deviceId: req.headers['x-phonejob-device'],
+          ts: Number(req.headers['x-phonejob-ts']),
+          proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
+        return;
+      }
+      const jobFile = url.pathname.match(/^\/api\/job\/([A-Za-z0-9_-]{8,64})\/file\/(\d+)$/);
+      if (req.method === 'PUT' && jobFile) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
+          return;
+        }
+        const body = await readJson(req, 2 * 1024 * 1024);
+        const result = await jobs.uploadChunk({
+          jobId: jobFile[1],
+          fileIndex: Number(jobFile[2]),
+          envelope: body,
           deviceId: req.headers['x-phonejob-device'],
           ts: Number(req.headers['x-phonejob-ts']),
           proof: req.headers['x-phonejob-proof'],

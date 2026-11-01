@@ -135,6 +135,57 @@ export async function sealEnvelope(kEncKey, header, plaintext) {
   return { ...sealedHeader, ct: toBase64Url(ciphertext) };
 }
 
+export async function sealFileChunk(kEncKey, meta, bytes) {
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  const header = {
+    v: 1,
+    type: 'job-file-chunk-v1',
+    job_id: meta.jobId,
+    file_index: meta.fileIndex,
+    file_sha256: meta.fileSha256,
+    chunk_index: meta.chunkIndex,
+    total_chunks: meta.totalChunks,
+    nonce: toBase64Url(nonce),
+  };
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const ciphertext = new Uint8Array(
+    await subtle.encrypt(
+      {
+        ...AES_PARAMS,
+        iv: nonce,
+        additionalData: encoder.encode(canonicalJson(header)),
+      },
+      kEncKey,
+      data,
+    ),
+  );
+  return { ...header, ct: toBase64Url(ciphertext) };
+}
+
+export async function openFileChunk(kEncKey, envelope) {
+  if (
+    !envelope ||
+    typeof envelope !== 'object' ||
+    typeof envelope.nonce !== 'string' ||
+    typeof envelope.ct !== 'string'
+  ) {
+    throw new Error('Invalid file chunk');
+  }
+  const { ct, ...header } = envelope;
+  const bytes = new Uint8Array(
+    await subtle.decrypt(
+      {
+        ...AES_PARAMS,
+        iv: fromBase64Url(header.nonce),
+        additionalData: encoder.encode(canonicalJson(header)),
+      },
+      kEncKey,
+      fromBase64Url(ct),
+    ),
+  );
+  return { header, bytes };
+}
+
 export async function openEnvelope(kEncKey, envelope) {
   if (
     !envelope ||

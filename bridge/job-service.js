@@ -2,7 +2,13 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { canonicalJson, hmacSha256Base64Url, openEnvelope, sealEnvelope } from './crypto.js';
+import {
+  canonicalJson,
+  hmacSha256Base64Url,
+  openEnvelope,
+  openFileChunk,
+  sealEnvelope,
+} from './crypto.js';
 import { computeConfirmationResponse, responsesEqual } from './confirm.js';
 import { validateResult } from './result.js';
 import { verifyTotp } from './totp.js';
@@ -12,6 +18,30 @@ const DEVICE_ID_RE = /^dev_[A-Za-z0-9_-]{8,64}$/;
 const INTENTS = new Set(['ask', 'file', 'shell', 'mixed']);
 const MAX_TEXT_BYTES = 64 * 1024;
 const MAX_REPLY_BYTES = 20 * 1024 * 1024;
+const MAX_FILES = 20;
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
+const CHUNK_SIZE = 512 * 1024;
+const ALLOWED_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.pdf',
+  '.docx',
+  '.xlsx',
+  '.pptx',
+  '.txt',
+  '.md',
+  '.zip',
+]);
+const RESERVED_NAMES = new Set([
+  'CON',
+  'PRN',
+  'AUX',
+  'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+]);
 
 function jobError(code) {
   const error = new Error(code);
@@ -33,6 +63,43 @@ function safeEqualBase64(left, right) {
   const a = Buffer.from(left, 'base64url');
   const b = Buffer.from(right, 'base64url');
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function safeFileName(value) {
+  const base = path
+    .basename(String(value ?? ''))
+    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 100);
+  if (!base || base === '.' || base === '..') throw jobError('JOB_FILE_NAME');
+  if (RESERVED_NAMES.has(base.split('.')[0].toUpperCase())) throw jobError('JOB_FILE_NAME');
+  if (!ALLOWED_EXTENSIONS.has(path.extname(base).toLowerCase())) throw jobError('JOB_FILE_TYPE');
+  return base;
+}
+
+function validateUploadFiles(files) {
+  if (!Array.isArray(files) || files.length > MAX_FILES) throw jobError('JOB_FILES_INVALID');
+  let total = 0;
+  return files.map((file, index) => {
+    if (!isObject(file)) throw jobError('JOB_FILES_INVALID');
+    if (typeof file.name !== 'string' || !file.name) throw jobError('JOB_FILE_NAME');
+    if (!Number.isInteger(file.size) || file.size <= 0 || file.size > MAX_FILE_BYTES) {
+      throw jobError('JOB_FILE_SIZE');
+    }
+    if (typeof file.sha256 !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(file.sha256)) {
+      throw jobError('JOB_FILE_HASH');
+    }
+    total += file.size;
+    if (total > MAX_TOTAL_BYTES) throw jobError('JOB_FILES_INVALID');
+    const name = safeFileName(file.name);
+    return {
+      name,
+      size: file.size,
+      sha256: file.sha256,
+      storageName: `${index}-${name}`,
+      chunks: Math.ceil(file.size / CHUNK_SIZE),
+    };
+  });
 }
 
 export class JobService {
@@ -108,7 +175,6 @@ export class JobService {
       throw jobError('JOB_INVALID');
     }
     if (!Array.isArray(job.files)) throw jobError('JOB_INVALID');
-    if (job.files.length > 0) throw jobError('JOB_FILES_UNSUPPORTED');
 
     const preset = job.target.preset === undefined ? 'default' : job.target.preset;
     if (typeof preset !== 'string') throw jobError('JOB_INVALID');
@@ -133,14 +199,11 @@ export class JobService {
     }
     if (!info.isDirectory()) throw jobError('JOB_WORKSPACE_NOT_ALLOWED');
 
-    const risk = job.intent === 'ask' ? 'low' : 'high';
+    const uploadFiles = validateUploadFiles(job.files);
+    const totalFileBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0);
+    const risk =
+      job.intent === 'ask' && totalFileBytes <= 10 * 1024 * 1024 ? 'low' : 'high';
     const jobDir = path.join(this.inboxDir, 'pending', job_id);
-    const tempDir = path.join(
-      this.inboxDir,
-      'pending',
-      `.tmp-${job_id}-${randomBytes(6).toString('hex')}`,
-    );
-    await mkdir(tempDir, { recursive: true });
     const jobJson = {
       version: 1,
       job_id,
@@ -149,10 +212,65 @@ export class JobService {
       target: { workspace, preset, session },
       intent: job.intent,
       text: job.text,
-      files: [],
+      files: uploadFiles.map((file) => ({
+        name: file.name,
+        size: file.size,
+        sha256: file.sha256,
+        local_path: `files/${file.storageName}`,
+      })),
       risk,
       reply: { want, max_bytes: maxBytes },
     };
+
+    if (uploadFiles.length > 0) {
+      const stagingDir = path.join(this.inboxDir, 'pending', `.upload-${job_id}`);
+      await rm(stagingDir, { recursive: true, force: true });
+      await mkdir(stagingDir, { recursive: true });
+      await writeFile(path.join(stagingDir, 'job.json'), JSON.stringify(jobJson, null, 2), 'utf8');
+      const saved = await this.jobStore.saveJobWithSequence({
+        job: {
+          job_id,
+          device_id,
+          state: 'UPLOADING',
+          risk,
+          intent: job.intent,
+          workspace,
+          inbox_path: jobDir,
+          challenge: null,
+          job_hash: null,
+          created_at: now,
+          updated_at: now,
+        },
+        seq,
+        nonce,
+      });
+      if (!saved) {
+        await rm(stagingDir, { recursive: true, force: true });
+        const current = await this.jobStore.getJob(job_id);
+        if (current && current.device_id === device_id) {
+          return { job_id: current.job_id, state: current.state, risk: current.risk };
+        }
+        throw jobError('JOB_REPLAY');
+      }
+      return {
+        job_id,
+        state: 'UPLOADING',
+        risk,
+        files: uploadFiles.map((file, index) => ({
+          index,
+          name: file.name,
+          size: file.size,
+          chunks: file.chunks,
+        })),
+      };
+    }
+
+    const tempDir = path.join(
+      this.inboxDir,
+      'pending',
+      `.tmp-${job_id}-${randomBytes(6).toString('hex')}`,
+    );
+    await mkdir(tempDir, { recursive: true });
     await writeFile(path.join(tempDir, 'job.json'), JSON.stringify(jobJson, null, 2), 'utf8');
     const jobHash = createHash('sha256').update(canonicalJson(jobJson), 'utf8').digest('base64url');
     const challenge = String(randomInt(100000, 1000000));
@@ -224,6 +342,117 @@ export class JobService {
       risk: job.risk,
       error: job.result_error ?? null,
     };
+  }
+
+  async uploadChunk({ jobId, fileIndex, envelope, deviceId, ts, proof }) {
+    const device = await this.#verifyDevice({
+      jobId,
+      deviceId,
+      ts,
+      proof,
+      type: 'job-upload-v1',
+    });
+    if (!Number.isInteger(fileIndex) || fileIndex < 0) throw jobError('JOB_FILE_CHUNK');
+    const job = await this.jobStore.getJob(jobId);
+    if (!job || job.device_id !== deviceId) throw jobError('JOB_NOT_FOUND');
+    if (job.state !== 'UPLOADING') throw jobError('JOB_NOT_UPLOADING');
+
+    const stagingDir = path.join(this.inboxDir, 'pending', `.upload-${jobId}`);
+    let content;
+    try {
+      content = JSON.parse(await readFile(path.join(stagingDir, 'job.json'), 'utf8'));
+    } catch {
+      throw jobError('JOB_UPLOAD_STATE');
+    }
+    const file = Array.isArray(content.files) ? content.files[fileIndex] : null;
+    if (!file) throw jobError('JOB_FILE_CHUNK');
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    let opened;
+    try {
+      opened = await openFileChunk(device.keys.kEnc, envelope);
+    } catch {
+      throw jobError('JOB_FILE_CHUNK');
+    }
+    const header = opened.header;
+    if (
+      header.type !== 'job-file-chunk-v1' ||
+      header.job_id !== jobId ||
+      header.file_index !== fileIndex ||
+      header.file_sha256 !== file.sha256 ||
+      header.chunk_index !== envelope.chunk_index ||
+      header.total_chunks !== totalChunks ||
+      !Number.isInteger(header.chunk_index) ||
+      header.chunk_index < 0 ||
+      header.chunk_index >= totalChunks
+    ) {
+      throw jobError('JOB_FILE_CHUNK');
+    }
+    const expectedLength =
+      header.chunk_index === totalChunks - 1
+        ? file.size - header.chunk_index * CHUNK_SIZE
+        : CHUNK_SIZE;
+    if (opened.bytes.length !== expectedLength) throw jobError('JOB_FILE_CHUNK');
+
+    const chunksDir = path.join(stagingDir, 'chunks');
+    await mkdir(chunksDir, { recursive: true });
+    await writeFile(
+      path.join(chunksDir, `${fileIndex}-${header.chunk_index}`),
+      Buffer.from(opened.bytes),
+    );
+
+    const expectedTotal = content.files.reduce(
+      (sum, item) => sum + Math.ceil(item.size / CHUNK_SIZE),
+      0,
+    );
+    const received = (await readdir(chunksDir)).length;
+    if (received < expectedTotal) {
+      return { job_id: jobId, state: 'UPLOADING', received, total: expectedTotal };
+    }
+
+    for (let index = 0; index < content.files.length; index += 1) {
+      const item = content.files[index];
+      const total = Math.ceil(item.size / CHUNK_SIZE);
+      const parts = [];
+      for (let chunkIndex = 0; chunkIndex < total; chunkIndex += 1) {
+        parts.push(await readFile(path.join(chunksDir, `${index}-${chunkIndex}`)));
+      }
+      const buffer = Buffer.concat(parts);
+      if (
+        buffer.length !== item.size ||
+        createHash('sha256').update(buffer).digest('base64url') !== item.sha256
+      ) {
+        throw jobError('JOB_FILE_HASH_MISMATCH');
+      }
+      const filePath = path.join(stagingDir, item.local_path);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, buffer);
+    }
+    await rm(chunksDir, { recursive: true, force: true });
+
+    const jobHash = createHash('sha256')
+      .update(canonicalJson(content), 'utf8')
+      .digest('base64url');
+    const challenge = String(randomInt(100000, 1000000));
+    const finalDir = path.join(this.inboxDir, 'pending', jobId);
+    try {
+      await rm(finalDir, { recursive: true, force: true });
+      await rename(stagingDir, finalDir);
+    } catch {
+      throw jobError('JOB_INBOX_FAILED');
+    }
+    const updated = await this.jobStore.completeUpload({
+      jobId,
+      challenge,
+      jobHash,
+      inboxPath: finalDir,
+      updatedAt: this.now(),
+    });
+    if (!updated) {
+      await rename(finalDir, stagingDir).catch(() => {});
+      throw jobError('JOB_NOT_UPLOADING');
+    }
+    return { job_id: jobId, state: 'WAITING_CONFIRM', challenge };
   }
 
   async scanResults() {
