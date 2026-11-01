@@ -207,6 +207,13 @@ export class PairingService {
     return envelope;
   }
 
+  cancelPairing(pairId) {
+    const session = this.#requirePairing(pairId);
+    if (session.state === 'provisioned') throw pairingError('PAIRING_NOT_CANCELLABLE');
+    this.pairings.delete(pairId);
+    return { ok: true };
+  }
+
   listDevices() {
     return [...this.devices.values()].map(({ deviceId, createdAt, revoked }) => ({
       device_id: deviceId,

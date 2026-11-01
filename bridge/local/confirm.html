@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoneJob 配对确认</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+    main { max-width: 32rem; margin: 0 auto; }
+    .hint { color: #666; }
+    .sas { font-size: 2rem; letter-spacing: 0.3em; font-weight: 700; }
+    input { font-size: 1.5rem; letter-spacing: 0.2em; width: 10rem; }
+    .actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; }
+    .secondary { opacity: 0.7; }
+    .error { color: #b00020; min-height: 1.5em; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PhoneJob 配对确认</h1>
+    <p class="hint">只在本机打开。关闭窗口即放弃本次配对。</p>
+    <p id="state">正在加载…</p>
+    <form id="confirm-form" hidden>
+      <p>电脑端 SAS：<strong id="pc-sas" class="sas"></strong></p>
+      <p>核对手机屏幕上的 6 位 SAS 与上方一致，然后输入手机上的 SAS。</p>
+      <label for="sas">手机 SAS</label>
+      <input id="sas" name="sas" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required>
+      <div class="actions">
+        <button type="submit">确认配对</button>
+        <button type="button" id="cancel" class="secondary">取消</button>
+      </div>
+    </form>
+    <p id="error" class="error" role="alert"></p>
+  </main>
+  <script src="/local/app.js" defer></script>
+</body>
+</html>

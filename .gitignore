@@ -8,6 +8,7 @@ build/
 *.key
 *.pem
 keys.bin
+admin.token
 .env
 .env.*
 secrets/

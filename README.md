@@ -10,7 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对密码学 / 配对服务）；bridge HTTP、PWA、DSH 插件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页）；PWA、DSH 插件未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
@@ -19,15 +19,21 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/totp.js`：RFC 4226 / RFC 6238 HOTP/TOTP，支持 ±1 步验证
 - `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/pairing.js`：start → claim（SAS 证明）→ 本地确认 SAS → `K_otp` 下发 → 设备登记/吊销（内存态）
+- `bridge/servers.js`：API 端口只放 `health/claim/provision`；本地端口放 `start/status/confirm/cancel/devices`，带 Host/Origin/JSON/admin/pair token 校验
+- `bridge/local/`：本地配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
+- `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
-- 测试：`npm test`（Node 24 test runner，无第三方依赖；19 项通过）
-- 下一步：bridge HTTP 层 + 本地确认页（CSRF）+ PWA 端 TOTP 公式
+- 测试：`npm test`（Node 24 test runner，无第三方依赖；22 项通过）
+- 下一步：QR/PC 配对首页、PWA、SQLite 持久化、DSH 插件
 
 ```bash
 npm test
 node bridge/key-init.js            # 首次初始化；默认 %DSH_HOME%\phonejob\keys.bin
 node bridge/key-init.js --rotate   # 轮换；旧码失效，需重新下发设备
+node bridge/index.js               # 启动 bridge；API 127.0.0.1:7788，本地 127.0.0.1:7789
 ```
+
+`bridge/index.js` 首次启动也会加载/生成 `K_otp`；本地管理 token 写到 `%DSH_HOME%\phonejob\admin.token`，不打印到日志。
 
 ## 许可：源码可见，但禁止商业使用与劳动剥削
 
