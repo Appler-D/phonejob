@@ -35,6 +35,25 @@
       <p id="device-label" class="hint"></p>
       <p id="totp-code" class="totp"></p>
       <p class="hint"><span id="totp-remaining">30</span> 秒后刷新</p>
+
+      <div id="job-panel">
+        <h3>发送任务</h3>
+        <label for="job-workspace">工作区</label>
+        <input id="job-workspace" type="text" spellcheck="false" autocomplete="off">
+        <label for="job-intent">类型</label>
+        <select id="job-intent">
+          <option value="ask">问答（只读）</option>
+          <option value="file">文件（高风险）</option>
+          <option value="mixed">混合（高风险）</option>
+        </select>
+        <label for="job-text">任务</label>
+        <textarea id="job-text" rows="4" maxlength="60000" placeholder="描述要电脑执行的任务"></textarea>
+        <button id="job-send" type="button">发送任务</button>
+        <p id="job-status" class="status"></p>
+        <p id="job-error" class="error" role="alert"></p>
+        <p class="hint">任务先进入电脑的 pending/，需要电脑端确认后才会执行。</p>
+      </div>
+
       <button id="repair-button" type="button" class="secondary">重新配对</button>
     </section>
   </main>

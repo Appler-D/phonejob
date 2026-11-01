@@ -7,14 +7,25 @@ import {
   fromBase64Url,
   generatePairingKeyPair,
   hmacSha256Base64Url,
+  importAesKey,
+  importHmacKey,
   importOtpKey,
   importPeerPublicKey,
   openOtpProvisioning,
   pairingTranscript,
+  sealEnvelope,
   toBase64Url,
   totpWithKey,
 } from './crypto.js';
-import { deleteDevice, getKey, listDevices, putDevice, putKey } from './store.js';
+import {
+  deleteDevice,
+  getDeviceKeys,
+  getKey,
+  listDevices,
+  putDevice,
+  putDeviceKeys,
+  putKey,
+} from './store.js';
 
 const pairPanel = document.getElementById('pair-panel');
 const totpPanel = document.getElementById('totp-panel');
@@ -28,6 +39,12 @@ const codeEl = document.getElementById('totp-code');
 const remainingEl = document.getElementById('totp-remaining');
 const deviceEl = document.getElementById('device-label');
 const rePairButton = document.getElementById('repair-button');
+const jobWorkspace = document.getElementById('job-workspace');
+const jobIntent = document.getElementById('job-intent');
+const jobText = document.getElementById('job-text');
+const jobSend = document.getElementById('job-send');
+const jobStatusEl = document.getElementById('job-status');
+const jobErrorEl = document.getElementById('job-error');
 
 let currentDevice = null;
 let currentKey = null;
@@ -39,6 +56,14 @@ function setStatus(text) {
 
 function setError(text) {
   errorEl.textContent = text;
+}
+
+function setJobStatus(text) {
+  jobStatusEl.textContent = text;
+}
+
+function setJobError(text) {
+  jobErrorEl.textContent = text;
 }
 
 function delay(ms) {
@@ -65,8 +90,11 @@ function showTotp(device, key) {
   pairPanel.hidden = true;
   totpPanel.hidden = false;
   deviceEl.textContent = `${new URL(device.bridge_url).host} · ${device.device_id.slice(0, 12)}…`;
+  jobWorkspace.value = Array.isArray(device.workspaces) ? device.workspaces[0] ?? '' : '';
   setStatus('');
   setError('');
+  setJobStatus('');
+  setJobError('');
   stopTotp();
   renderTotp();
   totpTimer = setInterval(renderTotp, 1000);
@@ -82,6 +110,8 @@ function showPair() {
   sasEl.textContent = '';
   setStatus('');
   setError('');
+  setJobStatus('');
+  setJobError('');
 }
 
 function parsePayload(raw) {
@@ -111,7 +141,12 @@ function parsePayload(raw) {
   }
   const expiresAt = Number(payload.expires_at);
   if (!Number.isFinite(expiresAt)) throw new Error('expires_at 无效');
-  return { ...payload, bridge_url: bridgeUrl.origin, expires_at: expiresAt };
+  const workspaces = Array.isArray(payload.workspaces)
+    ? payload.workspaces
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.trim())
+    : [];
+  return { ...payload, bridge_url: bridgeUrl.origin, expires_at: expiresAt, workspaces };
 }
 
 async function errorText(response) {
@@ -131,13 +166,13 @@ async function waitForProvision(base, payload, deviceId, proof) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pair_id: payload.pair_id, device_id: deviceId, proof }),
     });
-    if (response.ok) return response.json();
     const body = await response.json().catch(() => null);
     const code = body?.error || `HTTP ${response.status}`;
     if (response.status === 202 || body?.state === 'waiting' || (response.status === 409 && code === 'PAIRING_NOT_CONFIRMED')) {
       await delay(1000);
       continue;
     }
+    if (response.ok) return body;
     if (response.status === 404 || response.status === 410) {
       throw new Error('配对已过期，请在电脑上重新生成');
     }
@@ -202,14 +237,25 @@ async function startPairing() {
     const received = await openOtpProvisioning(keys.kEnc, envelope);
     const otpKey = await importOtpKey(received.otpSecret);
     await putKey(received.keyId, otpKey);
+    const deviceKeys = {
+      enc: await importAesKey(keys.kEnc),
+      confirm: await importHmacKey(keys.kConfirm),
+      auth: await importHmacKey(keys.kAuth),
+    };
+    await putDeviceKeys(claim.device_id, deviceKeys);
     const device = {
       device_id: claim.device_id,
       key_id: received.keyId,
       bridge_url: base,
       created_at: new Date().toISOString(),
       sas,
+      seq: 0,
+      workspaces: payload.workspaces,
     };
     await putDevice(device);
+    for (const name of ['kPair', 'kSas', 'kConfirm', 'kEnc', 'kAuth']) {
+      if (keys[name] instanceof Uint8Array) keys[name].fill(0);
+    }
     payloadInput.value = '';
     showTotp(device, otpKey);
   } catch (err) {
@@ -217,6 +263,72 @@ async function startPairing() {
     setError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
   } finally {
     pairButton.disabled = false;
+  }
+}
+
+async function sendJob() {
+  if (!currentDevice || !currentKey) {
+    setJobError('请先完成配对');
+    return;
+  }
+  setJobError('');
+  setJobStatus('');
+  const workspace = jobWorkspace.value.trim();
+  const text = jobText.value.trim();
+  const intent = jobIntent.value;
+  if (!workspace) {
+    setJobError('请填写工作区');
+    return;
+  }
+  if (!text) {
+    setJobError('请填写任务内容');
+    return;
+  }
+  const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+  if (!deviceKeys) {
+    setJobError('设备密钥缺失，请重新配对');
+    return;
+  }
+
+  jobSend.disabled = true;
+  try {
+    const seq = Number(currentDevice.seq ?? 0) + 1;
+    const now = Date.now();
+    const jobId = crypto.randomUUID();
+    const header = {
+      v: 2,
+      job_id: jobId,
+      device_id: currentDevice.device_id,
+      ts: Math.floor(now / 1000),
+      seq,
+      otp: await totpWithKey(currentKey, now),
+    };
+    const job = {
+      version: 1,
+      job_id: jobId,
+      device_id: currentDevice.device_id,
+      target: { workspace, preset: 'default', session: null },
+      intent,
+      text,
+      files: [],
+      reply: { want: 'text', max_bytes: 20 * 1024 * 1024 },
+    };
+    const envelope = await sealEnvelope(deviceKeys.enc, header, JSON.stringify(job));
+    const response = await fetch(`${currentDevice.bridge_url}/api/job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envelope),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+    currentDevice.seq = seq;
+    await putDevice(currentDevice);
+    setJobStatus(`已提交 ${body.job_id}，状态 ${body.state}`);
+    jobText.value = '';
+  } catch (err) {
+    setJobError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
+  } finally {
+    jobSend.disabled = false;
   }
 }
 
@@ -246,6 +358,7 @@ async function init() {
 }
 
 pairButton.addEventListener('click', startPairing);
+jobSend.addEventListener('click', sendJob);
 rePairButton.addEventListener('click', async () => {
   if (currentDevice) {
     try {

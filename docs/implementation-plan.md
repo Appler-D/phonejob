@@ -93,9 +93,9 @@
   4. `#/job/:id` 详情（挑战码、确认码输入、结果下载）
   5. `#/devices` 设备与吊销
 
-> P0 已实现「配对 + TOTP」单页；任务列表、新建、详情、设备页在任务通道阶段补齐。
+> P0/P1 已实现「配对 + TOTP + 文本任务发送」单页；任务列表、详情、设备页在后续补齐。
 
-- 存储：IndexedDB；`K_otp` 以**不可导出 HMAC CryptoKey** 保存（`extractable:false`），由电脑端生成、配对时下发；`K_confirm`/`K_enc` 在配对会话内存中使用，任务通道阶段再按需持久化。手机端只加载 TOTP 公式，不生成密码子。
+- 存储：IndexedDB；`K_otp` 以**不可导出 HMAC CryptoKey** 保存（`extractable:false`），由电脑端生成、配对时下发；`K_confirm`/`K_enc`/`K_auth` 在配对成功后导入为不可导出 CryptoKey 并保存。手机端只加载 TOTP 公式、加密和签名，不生成密码子。
 - 推送：Web Push（仅 HTTPS 源可用）；无推送权限时前端 30s 轮询。
 
 ### 4.2 隧道 / 中继（不自研服务器）
@@ -470,6 +470,7 @@ cloudflared tunnel run phonejob
 | 结果大小 | 20MB/任务 |
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
+| PWA 任务表单 | 已实现文本任务；工作区从配对二维码预填；文件分片未实现 |
 | 文件通道 | P1 暂不支持；`job.files` 非空拒绝，下一阶段做分片 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 当前落 `pending/` + `WAITING_CONFIRM`；挑战码/审批/DSH 执行下一步 |
@@ -477,4 +478,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v1.3 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；服务端 job 信封校验与 pending 落盘；其余评审项待定*
+*版本 v1.4 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；服务端 job 校验；PWA 发送文本任务；其余评审项待定*

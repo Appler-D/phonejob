@@ -195,6 +195,7 @@ export function createBridgeServers({
   localPort = 7789,
   version = '0.1.0',
   pwaOrigin = null,
+  workspaces = [],
 } = {}) {
   if (!pairing) throw new TypeError('pairing is required');
 
@@ -349,10 +350,11 @@ export function createBridgeServers({
         const token = randomBytes(24).toString('base64url');
         localTokens.set(result.pair_id, token);
         const localUrl = `http://127.0.0.1:${actualLocalPort}/pair/${result.pair_id}?token=${token}`;
+        const qrPayload = { ...result.qr, workspaces };
         let pwaUrl = null;
         let qrDataUrl = null;
         if (allowedPwaOrigin) {
-          const payload = Buffer.from(JSON.stringify(result.qr), 'utf8').toString('base64url');
+          const payload = Buffer.from(JSON.stringify(qrPayload), 'utf8').toString('base64url');
           pwaUrl = `${allowedPwaOrigin}/#pair=${payload}`;
           const qr = qrcode(0, 'M');
           qr.addData(pwaUrl);
@@ -362,6 +364,7 @@ export function createBridgeServers({
         }
         sendJson(res, 200, {
           ...result,
+          qr: qrPayload,
           local_url: localUrl,
           pwa_url: pwaUrl,
           qr_data_url: qrDataUrl,

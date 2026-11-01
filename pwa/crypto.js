@@ -105,8 +105,34 @@ export async function hmacSha256Base64Url(key, message) {
   return toBase64Url(mac);
 }
 
-async function importAesKey(kEnc) {
+async function importAesDecryptKey(kEnc) {
   return subtle.importKey('raw', kEnc, 'AES-GCM', false, ['decrypt']);
+}
+
+export async function importAesKey(kEnc) {
+  return subtle.importKey('raw', kEnc, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+export async function importHmacKey(key) {
+  return subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+}
+
+export async function sealEnvelope(kEncKey, header, plaintext) {
+  const nonce = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  const sealedHeader = { ...header, nonce: toBase64Url(nonce) };
+  const data = typeof plaintext === 'string' ? encoder.encode(plaintext) : new Uint8Array(plaintext);
+  const ciphertext = new Uint8Array(
+    await subtle.encrypt(
+      {
+        ...AES_PARAMS,
+        iv: nonce,
+        additionalData: encoder.encode(canonicalJson(sealedHeader)),
+      },
+      kEncKey,
+      data,
+    ),
+  );
+  return { ...sealedHeader, ct: toBase64Url(ciphertext) };
 }
 
 export async function openOtpProvisioning(kEnc, envelope) {
@@ -123,7 +149,7 @@ export async function openOtpProvisioning(kEnc, envelope) {
     throw new Error('Invalid provisioning envelope');
   }
   const { ct, ...header } = envelope;
-  const key = await importAesKey(kEnc);
+  const key = await importAesDecryptKey(kEnc);
   const plaintext = await subtle.decrypt(
     {
       ...AES_PARAMS,

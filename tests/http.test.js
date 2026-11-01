@@ -84,6 +84,7 @@ async function setup(t, { pwaOrigin = null } = {}) {
     localPort: 0,
     version: 'test',
     pwaOrigin,
+    workspaces: [workspace],
   });
   await servers.start();
   t.after(() => servers.close());
@@ -388,7 +389,7 @@ test('API errors are mapped without leaking internals', async (t) => {
 });
 
 test('PC home generates a QR payload for the PWA origin', async (t) => {
-  const { local } = await setup(t, { pwaOrigin: 'http://127.0.0.1:8000' });
+  const { local, workspace } = await setup(t, { pwaOrigin: 'http://127.0.0.1:8000' });
 
   const home = await request(local, '/');
   assert.equal(home.status, 200);
@@ -415,6 +416,7 @@ test('PC home generates a QR payload for the PWA origin', async (t) => {
   assert.equal(payload.pair_id, start.pair_id);
   assert.equal(payload.bridge_url, 'https://bridge.test');
   assert.equal(payload.expires_at, start.expires_at);
+  assert.deepEqual(payload.workspaces, [workspace]);
   assert.ok(start.local_url.startsWith('http://127.0.0.1:'));
 });
 

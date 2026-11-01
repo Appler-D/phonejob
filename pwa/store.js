@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 const DB_NAME = 'phonejob';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function openDb() {
@@ -14,6 +14,9 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains('keys')) {
         db.createObjectStore('keys', { keyPath: 'key_id' });
+      }
+      if (!db.objectStoreNames.contains('device_keys')) {
+        db.createObjectStore('device_keys', { keyPath: 'device_id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -64,12 +67,37 @@ export async function getKey(keyId) {
   });
 }
 
+export async function putDeviceKeys(deviceId, keys) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('device_keys', 'readwrite');
+    transaction.objectStore('device_keys').put({
+      device_id: deviceId,
+      enc: keys.enc,
+      confirm: keys.confirm,
+      auth: keys.auth,
+    });
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function getDeviceKeys(deviceId) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction('device_keys', 'readonly').objectStore('device_keys').get(deviceId);
+    request.onsuccess = () => resolve(request.result ?? null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 export async function deleteDevice(device) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(['devices', 'keys'], 'readwrite');
+    const transaction = db.transaction(['devices', 'keys', 'device_keys'], 'readwrite');
     transaction.objectStore('devices').delete(device.device_id);
     transaction.objectStore('keys').delete(device.key_id);
+    transaction.objectStore('device_keys').delete(device.device_id);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
   });

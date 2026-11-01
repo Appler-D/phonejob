@@ -86,6 +86,41 @@ test('PWA opens provisioning and computes TOTP with a non-extractable key', asyn
   );
 });
 
+test('PWA seals a job envelope the bridge can open', async () => {
+  const { pcKeys, phoneKeys } = await keysForBothSides();
+  const aesKey = await pwa.importAesKey(phoneKeys.kEnc);
+  await assert.rejects(() => crypto.subtle.exportKey('raw', aesKey));
+
+  const header = {
+    v: 2,
+    job_id: 'job_pwa_1',
+    device_id: 'dev_test_device_1',
+    ts: 1_761_900_000,
+    seq: 1,
+    otp: '123456',
+  };
+  const job = {
+    version: 1,
+    job_id: header.job_id,
+    device_id: header.device_id,
+    target: { workspace: 'D:\\work', preset: 'default', session: null },
+    intent: 'ask',
+    text: 'hello from pwa',
+    files: [],
+    reply: { want: 'text', max_bytes: 1024 },
+  };
+  const envelope = await pwa.sealEnvelope(aesKey, header, JSON.stringify(job));
+  const opened = await bridge.openEnvelope(pcKeys.kEnc, envelope);
+  assert.equal(Buffer.from(opened.plaintext).toString('utf8'), JSON.stringify(job));
+
+  await assert.rejects(() =>
+    bridge.openEnvelope(pcKeys.kEnc, { ...envelope, job_id: 'job_other_1' }),
+  );
+
+  const hmacKey = await pwa.importHmacKey(phoneKeys.kConfirm);
+  await assert.rejects(() => crypto.subtle.exportKey('raw', hmacKey));
+});
+
 test('PWA base64url and canonical JSON match the bridge', () => {
   const bytes = new Uint8Array([0, 1, 2, 3, 128, 250, 255]);
   assert.equal(pwa.toBase64Url(bytes), Buffer.from(bytes).toString('base64url'));

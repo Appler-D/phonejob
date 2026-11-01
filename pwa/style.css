@@ -55,6 +55,11 @@ h2 {
   font-size: 1.1rem;
 }
 
+h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
 .hint {
   color: var(--muted);
   font-size: 0.9rem;
@@ -74,18 +79,33 @@ label {
   font-weight: 600;
 }
 
+input,
+select,
 textarea {
   width: 100%;
-  min-height: 9rem;
-  resize: vertical;
-  padding: 0.75rem;
+  padding: 0.7rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: transparent;
   color: inherit;
   font: inherit;
+}
+
+textarea {
+  min-height: 9rem;
+  resize: vertical;
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 0.85rem;
+}
+
+#job-text {
+  min-height: 5rem;
+}
+
+#job-panel {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
 }
 
 button {
@@ -112,6 +132,8 @@ button.secondary {
 }
 
 button:focus-visible,
+input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
