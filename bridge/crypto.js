@@ -77,6 +77,24 @@ export async function computeSas(kSas, transcript) {
   return String(value % 1_000_000).padStart(6, '0');
 }
 
+export function pairingTranscript({ pairId, pcPub, phonePub, nonce, expiresAt }) {
+  return {
+    v: 1,
+    pair_id: pairId,
+    pc_pub: pcPub,
+    phone_pub: phonePub,
+    nonce,
+    expires_at: expiresAt,
+  };
+}
+
+export async function hmacSha256Base64Url(key, message) {
+  const hmacKey = await subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const data = typeof message === 'string' ? utf8(message) : new Uint8Array(message);
+  const mac = new Uint8Array(await subtle.sign('HMAC', hmacKey, data));
+  return toBase64Url(mac);
+}
+
 async function importAesKey(kEnc) {
   return subtle.importKey('raw', kEnc, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
