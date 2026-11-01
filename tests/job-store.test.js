@@ -138,3 +138,43 @@ test('countJobsSince filters by device and time', async (t) => {
   assert.equal(await store.countJobsSince('dev_other_1', 0), 0);
   await store.close();
 });
+
+test('auth failure state persists and clears', async (t) => {
+  const memory = new MemoryJobStore();
+  assert.equal(await memory.getAuthFailure('dev_test_1'), null);
+  await memory.saveAuthFailure({
+    deviceId: 'dev_test_1',
+    failures: 3,
+    windowStartedAt: 100,
+    lockedUntil: 200,
+  });
+  assert.deepEqual(await memory.getAuthFailure('dev_test_1'), {
+    device_id: 'dev_test_1',
+    failures: 3,
+    window_started_at: 100,
+    locked_until: 200,
+  });
+  await memory.clearAuthFailures('dev_test_1');
+  assert.equal(await memory.getAuthFailure('dev_test_1'), null);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-jobs-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'jobs.sqlite');
+  const store = new SqliteJobStore({ filePath: file });
+  await store.saveAuthFailure({
+    deviceId: 'dev_test_1',
+    failures: 10,
+    windowStartedAt: 100,
+    lockedUntil: 200,
+  });
+  await store.close();
+
+  const reopened = new SqliteJobStore({ filePath: file });
+  const persisted = await reopened.getAuthFailure('dev_test_1');
+  assert.equal(persisted.failures, 10);
+  assert.equal(persisted.window_started_at, 100);
+  assert.equal(persisted.locked_until, 200);
+  await reopened.clearAuthFailures('dev_test_1');
+  assert.equal(await reopened.getAuthFailure('dev_test_1'), null);
+  await reopened.close();
+});

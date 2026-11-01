@@ -7,6 +7,24 @@ export class MemoryJobStore {
   constructor() {
     this.jobs = new Map();
     this.deviceState = new Map();
+    this.authFailures = new Map();
+  }
+
+  async getAuthFailure(deviceId) {
+    return this.authFailures.get(deviceId) ?? null;
+  }
+
+  async saveAuthFailure({ deviceId, failures, windowStartedAt, lockedUntil }) {
+    this.authFailures.set(deviceId, {
+      device_id: deviceId,
+      failures,
+      window_started_at: windowStartedAt,
+      locked_until: lockedUntil,
+    });
+  }
+
+  async clearAuthFailures(deviceId) {
+    this.authFailures.delete(deviceId);
   }
 
   async getJob(jobId) {
@@ -113,6 +131,12 @@ export class SqliteJobStore {
         UNIQUE (device_id, nonce)
       );
       CREATE INDEX IF NOT EXISTS seen_messages_ts ON seen_messages (device_id, seen_at);
+      CREATE TABLE IF NOT EXISTS auth_failures (
+        device_id TEXT PRIMARY KEY,
+        failures INTEGER NOT NULL,
+        window_started_at INTEGER NOT NULL,
+        locked_until INTEGER NOT NULL
+      );
     `);
     const columns = new Set(this.db.prepare('PRAGMA table_info(jobs)').all().map((column) => column.name));
     if (!columns.has('challenge')) this.db.exec('ALTER TABLE jobs ADD COLUMN challenge TEXT');
@@ -135,6 +159,27 @@ export class SqliteJobStore {
       .prepare('SELECT COUNT(*) AS count FROM jobs WHERE device_id = ? AND created_at >= ?')
       .get(deviceId, since);
     return Number(row?.count ?? 0);
+  }
+
+  async getAuthFailure(deviceId) {
+    return this.db.prepare('SELECT * FROM auth_failures WHERE device_id = ?').get(deviceId) ?? null;
+  }
+
+  async saveAuthFailure({ deviceId, failures, windowStartedAt, lockedUntil }) {
+    this.db
+      .prepare(`
+        INSERT INTO auth_failures (device_id, failures, window_started_at, locked_until)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          failures = excluded.failures,
+          window_started_at = excluded.window_started_at,
+          locked_until = excluded.locked_until
+      `)
+      .run(deviceId, failures, windowStartedAt, lockedUntil);
+  }
+
+  async clearAuthFailures(deviceId) {
+    this.db.prepare('DELETE FROM auth_failures WHERE device_id = ?').run(deviceId);
   }
 
   async saveJobWithSequence({ job, seq, nonce }) {

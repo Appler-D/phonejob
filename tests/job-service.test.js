@@ -1119,3 +1119,79 @@ test('repeated OTP failures lock the device until the window passes', async (t) 
   });
   assert.equal((await f.service.submit(next)).state, 'WAITING_CONFIRM');
 });
+
+test('OTP lock survives a new JobService instance', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const valid = totp(f.otpSecret, now);
+  const wrong = valid === '000000' ? '111111' : '000000';
+  for (let index = 0; index < 3; index += 1) {
+    const envelope = await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: `job_test_persist_lock_${index}`,
+      seq: 1,
+      otpValue: wrong,
+    });
+    await assert.rejects(
+      () => f.service.submit(envelope),
+      (err) => err.code === 'JOB_OTP_INVALID',
+    );
+  }
+
+  const second = new JobService({
+    deviceStore: f.deviceStore,
+    jobStore: f.jobStore,
+    loadOtp: async () => ({ secret: f.otpSecret, keyId: 'key-test' }),
+    inboxDir: f.inbox,
+    workspaceAllowlist: [f.workspace],
+    now: () => now,
+  });
+  const locked = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_persist_lock_ok',
+    seq: 1,
+  });
+  await assert.rejects(
+    () => second.submit(locked),
+    (err) => err.code === 'JOB_LOCKED',
+  );
+});
+
+test('challenge response failures lock approvals until the window passes', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current });
+  const jobId = 'job_test_challenge_lock';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+    }),
+  );
+  const job = await f.service.getJob(jobId);
+  const expected = computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge);
+  const wrong = expected === 'AAAAAAAA' ? 'BBBBBBBB' : 'AAAAAAAA';
+
+  for (let index = 0; index < 3; index += 1) {
+    await assert.rejects(
+      () => f.service.approveJob({ jobId, response: wrong }),
+      (err) => err.code === 'JOB_RESPONSE_INVALID',
+    );
+  }
+  await assert.rejects(
+    () => f.service.approveJob({ jobId, response: expected }),
+    (err) => err.code === 'JOB_LOCKED',
+  );
+  assert.equal((await f.service.getJob(jobId)).state, 'WAITING_CONFIRM');
+
+  current = now + 5 * 60_000 + 1;
+  const approved = await f.service.approveJob({ jobId, response: expected });
+  assert.equal(approved.state, 'QUEUED');
+});

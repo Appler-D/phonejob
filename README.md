@@ -37,8 +37,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；77 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流与 OTP 锁定已用单元/HTTP 测试覆盖
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；80 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化已用单元/HTTP 测试覆盖
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；Service Worker/Web Push、iOS Safari 实测
 
@@ -63,7 +63,7 @@ node bridge/index.js
 
 超时默认值：上传 30 分钟、确认 10 分钟（超时移入 `expired/` 并标记 `EXPIRED`）、执行 35 分钟（bridge 兜底标记 `FAILED`；插件自身 30 分钟取消当前轮）。可用 `PHONEJOB_UPLOAD_TTL_MS` / `PHONEJOB_CONFIRM_TTL_MS` / `PHONEJOB_EXECUTION_TTL_MS` 覆盖 bridge 默认值。
 
-限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态在 bridge 进程内，重启后重置。
+限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 或挑战码连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态存 SQLite，bridge 重启后仍保留。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 

@@ -151,7 +151,6 @@ export class JobService {
     this.executionTtlMs = executionTtlMs;
     this.maxJobsPerHour = maxJobsPerHour;
     this.audit = audit;
-    this.authFailures = new Map();
     this.scanning = false;
     this.timeoutScanning = false;
   }
@@ -167,33 +166,38 @@ export class JobService {
     });
   }
 
-  #checkDeviceLock(deviceId) {
-    const failure = this.authFailures.get(deviceId);
-    if (failure && failure.lockedUntil > this.now()) throw jobError('JOB_LOCKED');
+  async #checkDeviceLock(deviceId) {
+    const failure = await this.jobStore.getAuthFailure(deviceId);
+    if (failure && failure.locked_until > this.now()) throw jobError('JOB_LOCKED');
   }
 
-  #recordAuthFailure(deviceId) {
+  async #recordAuthFailure(deviceId, { error = 'JOB_OTP_INVALID', kind = 'otp' } = {}) {
     const now = this.now();
-    let failure = this.authFailures.get(deviceId);
-    if (!failure || now - failure.windowStartedAt >= FAILURE_WINDOW_MS) {
-      failure = { count: 0, windowStartedAt: now, lockedUntil: 0 };
+    const previous = await this.jobStore.getAuthFailure(deviceId);
+    let failures = 0;
+    let windowStartedAt = now;
+    let lockedUntil = 0;
+    if (previous && now - previous.window_started_at < FAILURE_WINDOW_MS) {
+      failures = previous.failures;
+      windowStartedAt = previous.window_started_at;
+      lockedUntil = previous.locked_until;
     }
-    failure.count += 1;
-    if (failure.count >= FAILURE_HARD_LIMIT) {
-      failure.lockedUntil = now + FAILURE_HARD_LOCK_MS;
-    } else if (failure.count >= 3) {
-      failure.lockedUntil = now + FAILURE_LOCK_MS;
+    failures += 1;
+    if (failures >= FAILURE_HARD_LIMIT) {
+      lockedUntil = now + FAILURE_HARD_LOCK_MS;
+    } else if (failures >= 3) {
+      lockedUntil = now + FAILURE_LOCK_MS;
     }
-    this.authFailures.set(deviceId, failure);
+    await this.jobStore.saveAuthFailure({ deviceId, failures, windowStartedAt, lockedUntil });
     this.audit?.record('auth.failure', {
       device_id: deviceId,
-      error: 'JOB_OTP_INVALID',
-      reason: failure.count >= FAILURE_HARD_LIMIT ? 'otp_lock_1h' : 'otp_attempt',
+      error,
+      reason: failures >= FAILURE_HARD_LIMIT ? `${kind}_lock_1h` : `${kind}_attempt`,
     });
   }
 
-  #clearAuthFailures(deviceId) {
-    this.authFailures.delete(deviceId);
+  async #clearAuthFailures(deviceId) {
+    await this.jobStore.clearAuthFailures(deviceId);
   }
 
   async submit(envelope) {
@@ -227,13 +231,13 @@ export class JobService {
       return { job_id: existing.job_id, state: existing.state, risk: existing.risk };
     }
 
-    this.#checkDeviceLock(device_id);
+    await this.#checkDeviceLock(device_id);
     const { secret } = await this.loadOtp();
     if (!verifyTotp(secret, otp, now, { window: 1 })) {
-      this.#recordAuthFailure(device_id);
+      await this.#recordAuthFailure(device_id);
       throw jobError('JOB_OTP_INVALID');
     }
-    this.#clearAuthFailures(device_id);
+    await this.#clearAuthFailures(device_id);
     if (
       (await this.jobStore.countJobsSince(device_id, now - RATE_WINDOW_MS)) >=
       this.maxJobsPerHour
@@ -867,8 +871,16 @@ export class JobService {
     if (!job.challenge || !job.job_hash) throw jobError('JOB_INVALID');
     const device = await this.deviceStore.getDevice(job.device_id);
     if (!device || device.revoked) throw jobError('JOB_DEVICE_REJECTED');
+    await this.#checkDeviceLock(job.device_id);
     const expected = computeConfirmationResponse(device.keys.kConfirm, job.job_hash, job.challenge);
-    if (!responsesEqual(response, expected)) throw jobError('JOB_RESPONSE_INVALID');
+    if (!responsesEqual(response, expected)) {
+      await this.#recordAuthFailure(job.device_id, {
+        error: 'JOB_RESPONSE_INVALID',
+        kind: 'challenge',
+      });
+      throw jobError('JOB_RESPONSE_INVALID');
+    }
+    await this.#clearAuthFailures(job.device_id);
 
     const pendingDir = path.join(this.inboxDir, 'pending', jobId);
     const approvedDir = path.join(this.inboxDir, 'approved', jobId);
