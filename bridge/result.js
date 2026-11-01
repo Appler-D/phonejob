@@ -5,7 +5,7 @@ const MAX_RESULT_TEXT_BYTES = 200 * 1024;
 export const MAX_RESULT_FILES = 10;
 export const MAX_RESULT_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_RESULT_TOTAL_BYTES = 20 * 1024 * 1024;
-const RESULT_EXTENSIONS = new Set([
+export const RESULT_EXTENSIONS = new Set([
   '.jpg',
   '.jpeg',
   '.png',

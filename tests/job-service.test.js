@@ -18,6 +18,7 @@ import {
 import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp } from '../bridge/totp.js';
+import { storedZip } from './zip-fixture.js';
 
 const DEVICE_ID = 'dev_test_device_1';
 const KEYS = {
@@ -865,12 +866,113 @@ test('scanResults rejects result files with bad hashes or secrets', async (t) =>
   );
   await writeResult(f.inbox, secretJob, { files: [secretMeta] });
 
+  const zipJob = 'job_test_zip_result';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: zipJob,
+      seq: 3,
+    }),
+  );
+  const zipRecord = await f.service.getJob(zipJob);
+  await f.service.approveJob({
+    jobId: zipJob,
+    response: computeConfirmationResponse(KEYS.kConfirm, zipRecord.job_hash, zipRecord.challenge),
+  });
+  const zipMeta = await writeResultFile(
+    f.inbox,
+    zipJob,
+    0,
+    storedZip([{ name: 'evil.exe', data: 'MZ' }]),
+    'bundle.zip',
+  );
+  await writeResult(f.inbox, zipJob, { files: [zipMeta] });
+
   const completed = await f.service.scanResults();
-  assert.equal(completed.length, 2);
+  assert.equal(completed.length, 3);
   const badHashState = await f.service.getJob(badHashJob);
   assert.equal(badHashState.state, 'FAILED');
   assert.match(badHashState.result_error, /hash/);
   const secretState = await f.service.getJob(secretJob);
   assert.equal(secretState.state, 'FAILED');
   assert.match(secretState.result_error, /secret/);
+  const zipState = await f.service.getJob(zipJob);
+  assert.equal(zipState.state, 'FAILED');
+  assert.match(zipState.result_error, /zip entry type/);
+});
+
+test('zip uploads are scanned before they reach pending', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const ts = Math.floor(now / 1000);
+
+  const evil = storedZip([{ name: 'evil.exe', data: 'MZ' }]);
+  const evilSha = createHash('sha256').update(evil).digest('base64url');
+  const jobId = 'job_test_zip_upload';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+      files: [{ name: 'bundle.zip', size: evil.length, sha256: evilSha }],
+    }),
+  );
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const chunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId, fileIndex: 0, fileSha256: evilSha, chunkIndex: 0, totalChunks: 1 },
+    evil,
+  );
+  await assert.rejects(
+    () =>
+      f.service.uploadChunk({
+        jobId,
+        fileIndex: 0,
+        envelope: chunk,
+        deviceId: DEVICE_ID,
+        ts,
+        proof,
+      }),
+    (err) => err.code === 'JOB_ZIP_UNSAFE',
+  );
+  assert.equal((await f.service.getJob(jobId)).state, 'UPLOADING');
+
+  const safe = storedZip([{ name: 'note.txt', data: 'safe' }]);
+  const safeSha = createHash('sha256').update(safe).digest('base64url');
+  const safeJob = 'job_test_zip_upload_ok';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: safeJob,
+      seq: 2,
+      files: [{ name: 'bundle.zip', size: safe.length, sha256: safeSha }],
+    }),
+  );
+  const safeProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: safeJob, ts }),
+  );
+  const safeChunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId: safeJob, fileIndex: 0, fileSha256: safeSha, chunkIndex: 0, totalChunks: 1 },
+    safe,
+  );
+  const uploaded = await f.service.uploadChunk({
+    jobId: safeJob,
+    fileIndex: 0,
+    envelope: safeChunk,
+    deviceId: DEVICE_ID,
+    ts,
+    proof: safeProof,
+  });
+  assert.equal(uploaded.state, 'WAITING_CONFIRM');
 });

@@ -10,8 +10,14 @@ import {
   sealEnvelope,
 } from './crypto.js';
 import { computeConfirmationResponse, responsesEqual } from './confirm.js';
-import { scanResultBytes, validateResult } from './result.js';
+import {
+  MAX_RESULT_TOTAL_BYTES,
+  RESULT_EXTENSIONS,
+  scanResultBytes,
+  validateResult,
+} from './result.js';
 import { verifyTotp } from './totp.js';
+import { scanZip } from './zip-scan.js';
 
 const JOB_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const DEVICE_ID_RE = /^dev_[A-Za-z0-9_-]{8,64}$/;
@@ -66,6 +72,12 @@ function safeEqualBase64(left, right) {
   const a = Buffer.from(left, 'base64url');
   const b = Buffer.from(right, 'base64url');
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function zipRejection(result) {
+  if (result.reason === 'too_large') return jobError('JOB_ZIP_TOO_LARGE');
+  if (result.reason === 'invalid') return jobError('JOB_ZIP_INVALID');
+  return jobError('JOB_ZIP_UNSAFE');
 }
 
 function safeFileName(value) {
@@ -440,6 +452,13 @@ export class JobService {
       ) {
         throw jobError('JOB_FILE_HASH_MISMATCH');
       }
+      if (path.extname(item.name).toLowerCase() === '.zip') {
+        const zip = scanZip(buffer, {
+          allowedExtensions: ALLOWED_EXTENSIONS,
+          maxBytes: MAX_TOTAL_BYTES,
+        });
+        if (!zip.ok) throw zipRejection(zip);
+      }
       const filePath = path.join(stagingDir, item.local_path);
       await mkdir(path.dirname(filePath), { recursive: true });
       await writeFile(filePath, buffer);
@@ -483,6 +502,14 @@ export class JobService {
     if (bytes.length !== file.size) return { ok: false, error: 'result file size mismatch' };
     if (createHash('sha256').update(bytes).digest('base64url') !== file.sha256) {
       return { ok: false, error: 'result file hash mismatch' };
+    }
+    if (path.extname(file.name).toLowerCase() === '.zip') {
+      const zip = scanZip(bytes, {
+        allowedExtensions: RESULT_EXTENSIONS,
+        maxEntries: 200,
+        maxBytes: MAX_RESULT_TOTAL_BYTES * 3,
+      });
+      if (!zip.ok) return { ok: false, error: zip.error };
     }
     if (bytes.includes(secret)) return { ok: false, error: 'result file blocked: key material' };
     const scan = scanResultBytes(bytes, forbidden);

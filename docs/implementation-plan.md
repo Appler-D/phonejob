@@ -140,6 +140,7 @@
 - 文本 ≤200KB；结果文件最多 10 个、单文件 ≤10MB、总计 ≤20MB，类型限 jpg/jpeg/png/pdf/docx/xlsx/pptx/txt/md/csv/json/zip。
 - 执行器写 `done/<job_id>/result.json` 与 `done/<job_id>/files/<index>`；bridge 每秒扫描，校验元数据、实际大小、SHA-256 与密钥模式，失败则整单 `FAILED`。
 - 文本与每个结果文件分别用设备 `K_enc` 加密；文件下载签名绑定 `job_id + file_index`，手机端解密后再复核 SHA-256。
+- zip 附件与 zip 结果文件在上传/扫描阶段检查内部路径、类型、加密、嵌套深度、条目数与声明解压大小；嵌套 zip 递归检查，超限拒绝。
 - 文件不预览、不执行；Web Push 通知后续。
 
 ---
@@ -479,8 +480,8 @@ cloudflared tunnel run phonejob
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换并重新下发剩余设备 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
 | PWA 任务表单 | 已实现文本 + 附件；工作区从配对二维码预填；512KB 分片上传 |
-| 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核 |
-| 结果文件 | 已实现 outbox → `done/<id>/files/<index>`；元数据/哈希/密钥扫描；按索引加密下载 |
+| 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核；zip 条目扫描 |
+| 结果文件 | 已实现 outbox → `done/<id>/files/<index>`；元数据/哈希/密钥扫描；按索引加密下载；zip 条目扫描 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
 | DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；隔离 DSH 已验，桌面真实模型回复待验证 |
@@ -489,4 +490,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v2.1 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v2.2 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；zip 条目扫描；DSH 插件隔离实机验证；其余评审项待定*
