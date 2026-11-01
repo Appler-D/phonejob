@@ -24,6 +24,20 @@ const keysPath = process.env.PHONEJOB_KEYS
 const apiPort = Number(process.env.PHONEJOB_API_PORT ?? 7788);
 const localPort = Number(process.env.PHONEJOB_LOCAL_PORT ?? 7789);
 
+function envDuration(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive number of milliseconds`);
+  }
+  return Math.trunc(value);
+}
+
+const confirmTtlMs = envDuration('PHONEJOB_CONFIRM_TTL_MS', 10 * 60_000);
+const uploadTtlMs = envDuration('PHONEJOB_UPLOAD_TTL_MS', 30 * 60_000);
+const executionTtlMs = envDuration('PHONEJOB_EXECUTION_TTL_MS', 35 * 60_000);
+
 if (!Number.isInteger(apiPort) || apiPort < 0 || apiPort > 65535) {
   throw new Error('PHONEJOB_API_PORT must be an integer between 0 and 65535');
 }
@@ -53,7 +67,16 @@ await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
 const jobStore = new SqliteJobStore({ filePath: dbPath });
 const pairing = new PairingService({ loadOtp, deviceStore });
-const jobs = new JobService({ deviceStore, jobStore, loadOtp, inboxDir, workspaceAllowlist });
+const jobs = new JobService({
+  deviceStore,
+  jobStore,
+  loadOtp,
+  inboxDir,
+  workspaceAllowlist,
+  confirmTtlMs,
+  uploadTtlMs,
+  executionTtlMs,
+});
 const servers = createBridgeServers({
   pairing,
   jobs,
@@ -66,6 +89,7 @@ const servers = createBridgeServers({
 });
 
 let resultTimer = null;
+let timeoutTimer = null;
 
 try {
   await servers.start();
@@ -74,6 +98,13 @@ try {
       console.error(`result scan failed: ${err.message}`);
     });
   }, 1000);
+  const scanTimeouts = () => {
+    jobs.scanTimeouts().catch((err) => {
+      console.error(`timeout scan failed: ${err.message}`);
+    });
+  };
+  scanTimeouts();
+  timeoutTimer = setInterval(scanTimeouts, 30_000);
   console.log('phonejob bridge');
   console.log(`  api:   http://127.0.0.1:${servers.apiPort} (expose this via the tunnel only)`);
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
@@ -88,6 +119,7 @@ try {
   console.error(`failed to start: ${err.message}`);
   process.exitCode = 1;
   if (resultTimer) clearInterval(resultTimer);
+  if (timeoutTimer) clearInterval(timeoutTimer);
   await servers.close();
   await jobStore.close();
   await deviceStore.close();
@@ -95,6 +127,7 @@ try {
 
 const shutdown = async () => {
   if (resultTimer) clearInterval(resultTimer);
+  if (timeoutTimer) clearInterval(timeoutTimer);
   await servers.close();
   await jobStore.close();
   await deviceStore.close();

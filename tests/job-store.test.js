@@ -51,3 +51,70 @@ test('SqliteJobStore persists jobs and replay state', async (t) => {
   assert.equal(await reopened.saveJobWithSequence({ job: job('job_test_3', 3), seq: 1, nonce: 'n3' }), false);
   await reopened.close();
 });
+
+test('expireJob only transitions allowed states and persists', async (t) => {
+  const memory = new MemoryJobStore();
+  await memory.saveJobWithSequence({ job: job('job_test_expire', 1), seq: 1, nonce: 'n1' });
+  assert.equal(
+    await memory.expireJob({
+      jobId: 'job_test_expire',
+      fromStates: ['UPLOADING'],
+      state: 'EXPIRED',
+      resultError: 'JOB_UPLOAD_TIMEOUT',
+      finishedAt: 2,
+    }),
+    false,
+  );
+  assert.equal(
+    await memory.expireJob({
+      jobId: 'job_test_expire',
+      fromStates: ['WAITING_CONFIRM'],
+      state: 'EXPIRED',
+      resultError: 'JOB_CONFIRM_TIMEOUT',
+      finishedAt: 2,
+      inboxPath: 'C:\\inbox\\expired',
+    }),
+    true,
+  );
+  const memoryJob = await memory.getJob('job_test_expire');
+  assert.equal(memoryJob.state, 'EXPIRED');
+  assert.equal(memoryJob.result_error, 'JOB_CONFIRM_TIMEOUT');
+  assert.equal(memoryJob.finished_at, 2);
+  assert.equal(memoryJob.inbox_path, 'C:\\inbox\\expired');
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-jobs-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'jobs.sqlite');
+  const store = new SqliteJobStore({ filePath: file });
+  await store.saveJobWithSequence({ job: job('job_test_expire', 1), seq: 1, nonce: 'n1' });
+  assert.equal(
+    await store.expireJob({
+      jobId: 'job_test_expire',
+      fromStates: ['WAITING_CONFIRM'],
+      state: 'EXPIRED',
+      resultError: 'JOB_CONFIRM_TIMEOUT',
+      finishedAt: 2,
+      inboxPath: 'C:\\inbox\\expired',
+    }),
+    true,
+  );
+  assert.equal(
+    await store.expireJob({
+      jobId: 'job_test_expire',
+      fromStates: ['WAITING_CONFIRM'],
+      state: 'EXPIRED',
+      resultError: 'JOB_CONFIRM_TIMEOUT',
+      finishedAt: 3,
+    }),
+    false,
+  );
+  await store.close();
+
+  const reopened = new SqliteJobStore({ filePath: file });
+  const persisted = await reopened.getJob('job_test_expire');
+  assert.equal(persisted.state, 'EXPIRED');
+  assert.equal(persisted.result_error, 'JOB_CONFIRM_TIMEOUT');
+  assert.equal(persisted.finished_at, 2);
+  assert.equal(persisted.inbox_path, 'C:\\inbox\\expired');
+  await reopened.close();
+});

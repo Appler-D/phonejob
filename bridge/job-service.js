@@ -22,6 +22,9 @@ const MAX_FILES = 20;
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 const CHUNK_SIZE = 512 * 1024;
+const DEFAULT_CONFIRM_TTL_MS = 10 * 60_000;
+const DEFAULT_UPLOAD_TTL_MS = 30 * 60_000;
+const DEFAULT_EXECUTION_TTL_MS = 35 * 60_000;
 const ALLOWED_EXTENSIONS = new Set([
   '.jpg',
   '.jpeg',
@@ -110,6 +113,9 @@ export class JobService {
     inboxDir,
     workspaceAllowlist = [],
     now = () => Date.now(),
+    confirmTtlMs = DEFAULT_CONFIRM_TTL_MS,
+    uploadTtlMs = DEFAULT_UPLOAD_TTL_MS,
+    executionTtlMs = DEFAULT_EXECUTION_TTL_MS,
   } = {}) {
     if (!deviceStore || !jobStore || typeof loadOtp !== 'function' || !inboxDir) {
       throw new TypeError('deviceStore, jobStore, loadOtp, and inboxDir are required');
@@ -120,7 +126,11 @@ export class JobService {
     this.inboxDir = path.resolve(inboxDir);
     this.workspaceAllowlist = workspaceAllowlist.map(normalizePath);
     this.now = now;
+    this.confirmTtlMs = confirmTtlMs;
+    this.uploadTtlMs = uploadTtlMs;
+    this.executionTtlMs = executionTtlMs;
     this.scanning = false;
+    this.timeoutScanning = false;
   }
 
   async submit(envelope) {
@@ -504,6 +514,79 @@ export class JobService {
       return completed;
     } finally {
       this.scanning = false;
+    }
+  }
+
+  async scanTimeouts() {
+    if (this.timeoutScanning) return [];
+    this.timeoutScanning = true;
+    const expired = [];
+    try {
+      const now = this.now();
+      for (const job of await this.jobStore.listJobs()) {
+        if (job.state === 'UPLOADING') {
+          if (now - job.created_at < this.uploadTtlMs) continue;
+          const updated = await this.jobStore.expireJob({
+            jobId: job.job_id,
+            fromStates: ['UPLOADING'],
+            state: 'EXPIRED',
+            resultError: 'JOB_UPLOAD_TIMEOUT',
+            finishedAt: now,
+          });
+          if (!updated) continue;
+          await rm(path.join(this.inboxDir, 'pending', `.upload-${job.job_id}`), {
+            recursive: true,
+            force: true,
+          });
+          expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_UPLOAD_TIMEOUT' });
+          continue;
+        }
+
+        if (job.state === 'WAITING_CONFIRM') {
+          if (now - job.updated_at < this.confirmTtlMs) continue;
+          const pendingDir = path.join(this.inboxDir, 'pending', job.job_id);
+          const expiredDir = path.join(this.inboxDir, 'expired', job.job_id);
+          try {
+            await mkdir(path.dirname(expiredDir), { recursive: true });
+            await rename(pendingDir, expiredDir);
+          } catch {
+            try {
+              await stat(expiredDir);
+            } catch {
+              continue;
+            }
+          }
+          const updated = await this.jobStore.expireJob({
+            jobId: job.job_id,
+            fromStates: ['WAITING_CONFIRM'],
+            state: 'EXPIRED',
+            resultError: 'JOB_CONFIRM_TIMEOUT',
+            finishedAt: now,
+            inboxPath: expiredDir,
+          });
+          if (updated) {
+            expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_CONFIRM_TIMEOUT' });
+          }
+          continue;
+        }
+
+        if (job.state === 'QUEUED' || job.state === 'RUNNING') {
+          const since = job.decided_at ?? job.created_at;
+          if (now - since < this.executionTtlMs) continue;
+          const updated = await this.jobStore.completeJob({
+            jobId: job.job_id,
+            state: 'FAILED',
+            resultError: 'JOB_EXECUTION_TIMEOUT',
+            finishedAt: now,
+          });
+          if (updated) {
+            expired.push({ job_id: job.job_id, state: 'FAILED', error: 'JOB_EXECUTION_TIMEOUT' });
+          }
+        }
+      }
+      return expired;
+    } finally {
+      this.timeoutScanning = false;
     }
   }
 

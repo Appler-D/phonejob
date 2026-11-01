@@ -14,6 +14,8 @@ import path from 'node:path';
 
 const JOB_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const POLL_MS = 5000;
+const JOB_TIMEOUT_MS = 30 * 60_000;
+const CANCEL_SETTLE_MS = 30_000;
 
 export const name = 'phonejob-plugin';
 export const inject = ['agents', 'agentDefaultModel', 'sessions'];
@@ -176,6 +178,16 @@ function userMessage(text) {
   };
 }
 
+function timeoutError(timeoutMs) {
+  const duration =
+    timeoutMs >= 60_000
+      ? `${Math.round(timeoutMs / 60_000)} minutes`
+      : `${Math.round(timeoutMs / 1000)} seconds`;
+  const error = new Error(`timeout after ${duration}`);
+  error.code = 'JOB_TIMEOUT';
+  return error;
+}
+
 function installSelection(agentCtx, selection) {
   agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const selected = selection.current;
@@ -211,6 +223,10 @@ export function apply(ctx, config = {}) {
   const inbox = path.resolve(config.inbox ?? defaultInbox());
   const requestedPoll = Number(config.pollMs);
   const pollMs = Number.isFinite(requestedPoll) ? Math.max(1000, requestedPoll) : POLL_MS;
+  const requestedTimeout = Number(config.jobTimeoutMs);
+  const jobTimeoutMs = Number.isFinite(requestedTimeout)
+    ? Math.max(1000, requestedTimeout)
+    : JOB_TIMEOUT_MS;
   const owned = new Map();
   let busy = false;
   let disposed = false;
@@ -267,14 +283,41 @@ export function apply(ctx, config = {}) {
       const workspace = path.resolve(job.target.workspace);
       const stage = await stageFiles(job, next.dir, workspace);
       const agent = await getAgent(workspace);
-      await agent.whenIdle();
-      const fromSeq = agent.session.seq;
-      agent.followup(userMessage(buildPrompt(job, stage)));
-      await agent.whenIdle();
-      const sessions = ctx.get('sessions');
-      if (sessions?.flush) await sessions.flush(agent.session);
-      const outcome = extractOutcome(agent.session.events, fromSeq);
-      await writeResult(inbox, next.id, outcome);
+      let deadlineTimer;
+      const deadline = new Promise((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          try {
+            agent.cancel({ kind: 'hook', reason: 'phonejob-timeout' });
+          } catch {
+            // Cancellation is best effort; the timeout result is still written below.
+          }
+          reject(timeoutError(jobTimeoutMs));
+        }, jobTimeoutMs);
+      });
+      try {
+        await Promise.race([agent.whenIdle(), deadline]);
+        const fromSeq = agent.session.seq;
+        agent.followup(userMessage(buildPrompt(job, stage)));
+        await Promise.race([agent.whenIdle(), deadline]);
+        const sessions = ctx.get('sessions');
+        if (sessions?.flush) await sessions.flush(agent.session);
+        const outcome = extractOutcome(agent.session.events, fromSeq);
+        await writeResult(inbox, next.id, outcome);
+      } catch (err) {
+        if (err?.code === 'JOB_TIMEOUT') {
+          let settleTimer;
+          await Promise.race([
+            agent.whenIdle(),
+            new Promise((resolve) => {
+              settleTimer = setTimeout(resolve, CANCEL_SETTLE_MS);
+            }),
+          ]);
+          clearTimeout(settleTimer);
+        }
+        throw err;
+      } finally {
+        clearTimeout(deadlineTimer);
+      }
     } catch (err) {
       await writeResult(inbox, next.id, {
         status: 'failed',

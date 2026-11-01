@@ -116,9 +116,11 @@
   pending\<job_id>\job.json
   pending\<job_id>\files\<原名>
   approved\<job_id>\...        ← 只有批准后才移动到这里
+  working\<job_id>\...         ← 插件原子认领后
   done\<job_id>\result.json
   done\<job_id>\result\*
   rejected\<job_id>\
+  expired\<job_id>\            ← 确认/上传超时
 ```
 `job.json` 结构见 §6。DSH 插件**只读 `approved/`**。
 
@@ -129,7 +131,8 @@
   - 把附件从收件箱复制到 `<workspace>/.phonejob/<job_id>/`，让 agent 的沙箱可读
   - 通过 `ctx.agents` 按 workspace 复用专用会话，`agent.followup` 追加任务消息并 `whenIdle` 等待
   - 自动把该轮最后一条 assistant 文本写成 `done/<id>/result.json`；不需要额外的 `phone_job_reply` 工具
-- 未实现：`phone_job_list/read/claim/reply` 工具（由自动收集替代）、结果文件回传、30 分钟执行超时。
+  - 超过 `jobTimeoutMs`（默认 30 分钟）调用 `agent.cancel` 取消当前轮，等待收敛后回写 `failed` 结果
+- 未实现：`phone_job_list/read/claim/reply` 工具（由自动收集替代）、结果文件回传。
 - 隔离 DSH 已实机验证加载/认领/会话/失败结果回写；桌面真实模型回复待验证（本机 npx CLI 与桌面版凭据格式不一致，见 README）。
 
 ### 4.6 结果回传
@@ -142,19 +145,17 @@
 ## 5. 状态机
 
 ```
-CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过──▶ WAITING_CONFIRM
-   │                                                          │
-   │                                          用户输入正确确认码 + 点批准
-   │                                                          ▼
-   └──超时/失败/拒绝──▶ REJECTED                    APPROVED ──bridge 移入 approved/──▶ QUEUED
-                                                                                   │
-                                                             插件 claim ◀─────────┘
-                                                                   ▼
-                                                              RUNNING ──reply──▶ DONE ──回传──▶ DELIVERED
-                                                                   └──异常/超时──▶ FAILED
+UPLOADING ──分片完成──▶ WAITING_CONFIRM
+    │                          │
+    │                          ├──响应码正确 + 电脑批准──▶ QUEUED ──插件 claim──▶ RUNNING
+    │                          │                                                  │
+    │                          ├──拒绝──▶ REJECTED                                ├──reply──▶ DONE
+    │                          └──10 分钟确认超时──▶ EXPIRED                       └──异常/超时──▶ FAILED
+    └──30 分钟上传超时──▶ EXPIRED
 ```
 
 - 未在 `WAITING_CONFIRM` 前通过全部校验的任务，**永远不落进 `approved/`**。
+- 超时默认值：`UPLOADING` 30 分钟 → `EXPIRED`（清理 staging）；`WAITING_CONFIRM` 10 分钟 → `EXPIRED`（移入 `expired/`）；`QUEUED/RUNNING` 35 分钟兜底 → `FAILED`（`JOB_EXECUTION_TIMEOUT`），插件自身 30 分钟先取消当前轮。可用环境变量覆盖 bridge 的三个 TTL。
 - 每个状态转换写审计日志（JSONL，含 job_id、时间、来源指纹、结果）。
 
 ---
@@ -249,7 +250,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 
 > 这一步的价值：即使手机被远程控制、或隧道被完全攻破，攻击者也必须**让电脑前的人看到并输入一个只有手里设备才能算出的码**。
 >
-> 当前实现未做确认超时自动拒绝；手机状态响应未做 E2E 封装，靠两端挑战码人眼比对和响应码绑定 job_hash。
+> 当前实现已做确认超时自动过期（10 分钟，移入 `expired/`）；手机状态响应未做 E2E 封装，靠两端挑战码人眼比对和响应码绑定 job_hash。
 
 ### 7.4 密码学参数（固定，不得自行更改）
 | 用途 | 算法 |
@@ -354,7 +355,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
    ```
 3. `agent.followup` + `whenIdle` 等待该轮结束。
 4. 自动提取最后一条 assistant 文本，写 `done/<id>/result.json`；bridge 扫描并加密回传。
-5. 未实现 30 分钟执行超时；隔离 DSH 已验证执行/失败回写，桌面真实模型回复待验证。
+5. 超过 `jobTimeoutMs`（默认 30 分钟）调用 `agent.cancel` 取消当前轮，收敛后写超时失败结果；bridge 35 分钟兜底。隔离 DSH 已验证执行/失败回写，桌面真实模型回复待验证。
 
 ---
 
@@ -363,7 +364,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 - 手机端任务本地队列：网络失败自动重试（指数退避，最长 10 分钟）。
 - bridge 离线：隧道断开时手机收到 503，任务保留在手机队列，PC 上线后补投。
 - 幂等：同一 `job_id` 重复提交只接受第一次，后续返回当前状态。
-- 任务 TTL 24h：超时未执行自动 `REJECTED` 并通知手机。
+- 任务超时：上传 30 分钟、确认 10 分钟转 `EXPIRED`；执行 35 分钟兜底 `FAILED`（插件 30 分钟先取消）。更长任务需显式调大 TTL。
 - 结果丢失：手机端可按 job_id 重新拉取（结果保留 7 天）。
 
 ---
@@ -480,10 +481,10 @@ cloudflared tunnel run phonejob
 | 结果文件 | `result.files` 非空视为失败，下一阶段 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
-| DSH 插件 | 已实现认领/会话唤醒/最终回复回写；隔离 DSH 已验，桌面真实模型回复待验证 |
-| 确认超时 | 尚未自动拒绝；P2 后续补 |
+| DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；隔离 DSH 已验，桌面真实模型回复待验证 |
+| 超时 | 上传 30 分钟、确认 10 分钟 → `EXPIRED`；执行 35 分钟兜底 `FAILED` |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.9 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果加密回传；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v2.0 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果加密回传；确认/上传/执行超时；DSH 插件隔离实机验证；其余评审项待定*

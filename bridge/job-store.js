@@ -59,6 +59,17 @@ export class MemoryJobStore {
     return true;
   }
 
+  async expireJob({ jobId, fromStates, state, resultError, finishedAt, inboxPath }) {
+    const job = this.jobs.get(jobId);
+    if (!job || !fromStates.includes(job.state)) return false;
+    job.state = state;
+    job.result_error = resultError;
+    job.finished_at = finishedAt;
+    job.updated_at = finishedAt;
+    if (inboxPath !== undefined) job.inbox_path = inboxPath;
+    return true;
+  }
+
   async close() {}
 }
 
@@ -198,6 +209,20 @@ export class SqliteJobStore {
         WHERE job_id = ? AND state = 'UPLOADING'
       `)
       .run(challenge, jobHash, inboxPath, updatedAt, jobId);
+    return result.changes > 0;
+  }
+
+  async expireJob({ jobId, fromStates, state, resultError, finishedAt, inboxPath }) {
+    const placeholders = fromStates.map(() => '?').join(', ');
+    let fields = 'state = ?, result_error = ?, finished_at = ?, updated_at = ?';
+    const values = [state, resultError, finishedAt, finishedAt];
+    if (inboxPath !== undefined) {
+      fields += ', inbox_path = ?';
+      values.push(inboxPath);
+    }
+    const result = this.db
+      .prepare(`UPDATE jobs SET ${fields} WHERE job_id = ? AND state IN (${placeholders})`)
+      .run(...values, jobId, ...fromStates);
     return result.changes > 0;
   }
 

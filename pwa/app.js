@@ -407,24 +407,29 @@ async function watchJob(jobId) {
       }
       if (status.state === 'UPLOADING') {
         jobStateEl.textContent = '正在接收文件…';
-      } else if (status.state === 'QUEUED') {
+      } else if (status.state === 'QUEUED' || status.state === 'RUNNING') {
         jobStateEl.textContent = '电脑已批准，等待执行';
       } else if (status.state === 'REJECTED') {
         jobStateEl.textContent = '电脑已拒绝';
         stopJobWatch();
-      } else if (status.state === 'DONE' || status.state === 'FAILED') {
+      } else if (status.state === 'EXPIRED') {
         stopJobWatch();
         jobStateEl.textContent =
-          status.state === 'DONE'
-            ? '已完成'
-            : `执行失败${status.error ? `：${status.error}` : ''}`;
+          status.error === 'JOB_UPLOAD_TIMEOUT'
+            ? '上传超时，请重新发送'
+            : status.error === 'JOB_CONFIRM_TIMEOUT'
+              ? '确认超时，请重新发送'
+              : `任务已超时${status.error ? `：${status.error}` : ''}`;
+      } else if (status.state === 'FAILED') {
+        stopJobWatch();
+        jobStateEl.textContent = `执行失败${status.error ? `：${status.error}` : ''}`;
+      } else if (status.state === 'DONE') {
+        stopJobWatch();
+        jobStateEl.textContent = '已完成';
         try {
           const result = await fetchJobResult(jobId);
           jobResultEl.textContent = result.text || result.error || '(空结果)';
           jobResultEl.hidden = false;
-          if (status.state === 'FAILED' && result.error) {
-            jobStateEl.textContent = `执行失败：${result.error}`;
-          }
         } catch (err) {
           jobResultEl.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
           jobResultEl.hidden = false;

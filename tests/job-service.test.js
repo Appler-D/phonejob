@@ -26,7 +26,15 @@ const KEYS = {
   kAuth: Buffer.alloc(32, 0x66),
 };
 
-async function setup(t, { now = () => Date.now() } = {}) {
+async function setup(
+  t,
+  {
+    now = () => Date.now(),
+    confirmTtlMs,
+    uploadTtlMs,
+    executionTtlMs,
+  } = {},
+) {
   const inbox = await mkdtemp(path.join(os.tmpdir(), 'phonejob-inbox-'));
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'phonejob-ws-'));
   t.after(() => rm(inbox, { recursive: true, force: true }));
@@ -49,6 +57,9 @@ async function setup(t, { now = () => Date.now() } = {}) {
     inboxDir: inbox,
     workspaceAllowlist: [workspace],
     now,
+    confirmTtlMs,
+    uploadTtlMs,
+    executionTtlMs,
   });
   return { service, jobStore, deviceStore, inbox, workspace, otpSecret };
 }
@@ -601,4 +612,107 @@ test('non-ask intents are high risk', async (t) => {
     await readFile(path.join(f.inbox, 'pending', envelope.job_id, 'job.json'), 'utf8'),
   );
   assert.equal(job.risk, 'high');
+});
+
+test('confirmation timeout expires the job and blocks approval', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current, confirmTtlMs: 1000 });
+  const jobId = 'job_test_confirm_timeout';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  const response = computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge);
+
+  assert.deepEqual(await f.service.scanTimeouts(), []);
+
+  current = now + 1000;
+  const expired = await f.service.scanTimeouts();
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].state, 'EXPIRED');
+  assert.equal(expired[0].error, 'JOB_CONFIRM_TIMEOUT');
+  const stored = await f.service.getJob(jobId);
+  assert.equal(stored.state, 'EXPIRED');
+  assert.equal(stored.result_error, 'JOB_CONFIRM_TIMEOUT');
+  await assert.rejects(() => readFile(path.join(f.inbox, 'pending', jobId, 'job.json')));
+  assert.equal(
+    JSON.parse(await readFile(path.join(f.inbox, 'expired', jobId, 'job.json'), 'utf8')).job_id,
+    jobId,
+  );
+  await assert.rejects(
+    () => f.service.approveJob({ jobId, response }),
+    (err) => err.code === 'JOB_NOT_WAITING',
+  );
+  assert.deepEqual(await f.service.scanTimeouts(), []);
+});
+
+test('upload timeout expires the job and removes staging', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current, uploadTtlMs: 1000 });
+  const jobId = 'job_test_upload_timeout';
+  const content = Buffer.from('slow upload');
+  const sha256 = createHash('sha256').update(content).digest('base64url');
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+    files: [{ name: 'note.txt', size: content.length, sha256 }],
+  });
+  assert.equal((await f.service.submit(envelope)).state, 'UPLOADING');
+  await readFile(path.join(f.inbox, 'pending', `.upload-${jobId}`, 'job.json'));
+
+  current = now + 1000;
+  const expired = await f.service.scanTimeouts();
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].state, 'EXPIRED');
+  assert.equal(expired[0].error, 'JOB_UPLOAD_TIMEOUT');
+  assert.equal((await f.service.getJob(jobId)).state, 'EXPIRED');
+  await assert.rejects(() => readFile(path.join(f.inbox, 'pending', `.upload-${jobId}`, 'job.json')));
+  await assert.rejects(() => readFile(path.join(f.inbox, 'pending', jobId, 'job.json')));
+});
+
+test('execution timeout fails a queued job and ignores a late result', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current, executionTtlMs: 1000 });
+  const jobId = 'job_test_exec_timeout';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+
+  current = now + 999;
+  assert.deepEqual(await f.service.scanTimeouts(), []);
+
+  current = now + 1000;
+  const expired = await f.service.scanTimeouts();
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].state, 'FAILED');
+  assert.equal(expired[0].error, 'JOB_EXECUTION_TIMEOUT');
+  const stored = await f.service.getJob(jobId);
+  assert.equal(stored.state, 'FAILED');
+  assert.equal(stored.result_error, 'JOB_EXECUTION_TIMEOUT');
+  assert.equal(stored.finished_at, current);
+
+  await writeResult(f.inbox, jobId, { text: 'too late' });
+  assert.deepEqual(await f.service.scanResults(), []);
+  assert.equal((await f.service.getJob(jobId)).state, 'FAILED');
 });
