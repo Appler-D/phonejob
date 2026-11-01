@@ -53,6 +53,7 @@ export class PairingService {
     now = () => Date.now(),
     pairingTtlMs = PAIRING_TTL_MS,
     provisionTtlMs = PROVISION_TTL_MS,
+    audit = null,
   } = {}) {
     if (typeof loadOtp !== 'function') throw new TypeError('loadOtp is required');
     this.loadOtp = loadOtp;
@@ -60,6 +61,7 @@ export class PairingService {
     this.now = now;
     this.pairingTtlMs = pairingTtlMs;
     this.provisionTtlMs = provisionTtlMs;
+    this.audit = audit;
     this.pairings = new Map();
   }
 
@@ -80,6 +82,7 @@ export class PairingService {
       expiresAt: now + this.pairingTtlMs,
     };
     this.pairings.set(pairId, session);
+    this.audit?.record('pairing.started', { pairing_id: pairId });
     return {
       pair_id: pairId,
       pc_pub: session.pcPub,
@@ -127,6 +130,7 @@ export class PairingService {
       canonicalJson({ type: 'pair-claim', pair_id: pairId, phone_pub: phonePub }),
     );
     if (!safeEqualBase64Url(proof, expectedProof)) {
+      this.audit?.record('pairing.rejected', { pairing_id: pairId, reason: 'claim_proof' });
       throw pairingError('PAIRING_PROOF_INVALID');
     }
 
@@ -144,6 +148,10 @@ export class PairingService {
     session.keys = keys;
     session.claimedAt = this.now();
     session.state = 'claimed';
+    this.audit?.record('pairing.claimed', {
+      pairing_id: pairId,
+      device_id: session.deviceId,
+    });
     return { device_id: session.deviceId };
   }
 
@@ -156,11 +164,20 @@ export class PairingService {
     }
     const normalized = String(sas ?? '').replace(/\s+/g, '');
     if (!safeEqualText(normalized, session.sas)) {
+      this.audit?.record('pairing.rejected', {
+        pairing_id: pairId,
+        device_id: session.deviceId,
+        reason: 'sas_mismatch',
+      });
       throw pairingError('SAS_MISMATCH');
     }
     session.state = 'confirmed';
     session.confirmedAt = this.now();
     session.provisionExpiresAt = session.confirmedAt + this.provisionTtlMs;
+    this.audit?.record('pairing.confirmed', {
+      pairing_id: pairId,
+      device_id: session.deviceId,
+    });
     return { ok: true };
   }
 
@@ -173,18 +190,37 @@ export class PairingService {
       this.pairings.delete(pairId);
       throw pairingError('PAIRING_EXPIRED');
     }
-    if (deviceId !== session.deviceId) throw pairingError('DEVICE_MISMATCH');
+    if (deviceId !== session.deviceId) {
+      this.audit?.record('pairing.rejected', {
+        pairing_id: pairId,
+        device_id: deviceId,
+        reason: 'device_mismatch',
+      });
+      throw pairingError('DEVICE_MISMATCH');
+    }
 
     const expectedProof = await hmacSha256Base64Url(
       session.keys.kConfirm,
       canonicalJson({ type: 'otp-provision-request', pair_id: pairId, device_id: deviceId }),
     );
     if (!safeEqualBase64Url(proof, expectedProof)) {
+      this.audit?.record('pairing.rejected', {
+        pairing_id: pairId,
+        device_id: deviceId,
+        reason: 'provision_proof',
+      });
       throw pairingError('PROVISION_PROOF_INVALID');
     }
     if (session.state === 'provisioned') return session.provisionEnvelope;
     const activeDevices = (await this.deviceStore.listDevices()).filter((device) => !device.revoked).length;
-    if (activeDevices >= MAX_DEVICES) throw pairingError('DEVICE_LIMIT');
+    if (activeDevices >= MAX_DEVICES) {
+      this.audit?.record('pairing.rejected', {
+        pairing_id: pairId,
+        device_id: deviceId,
+        reason: 'device_limit',
+      });
+      throw pairingError('DEVICE_LIMIT');
+    }
 
     const { secret, keyId } = await this.loadOtp();
     if (!Buffer.isBuffer(secret) || secret.length !== 32) {
@@ -209,6 +245,10 @@ export class PairingService {
     });
     session.state = 'provisioned';
     session.provisionEnvelope = envelope;
+    this.audit?.record('pairing.provisioned', {
+      pairing_id: pairId,
+      device_id: deviceId,
+    });
     return envelope;
   }
 
@@ -216,6 +256,10 @@ export class PairingService {
     const session = this.#requirePairing(pairId);
     if (session.state === 'provisioned') throw pairingError('PAIRING_NOT_CANCELLABLE');
     this.pairings.delete(pairId);
+    this.audit?.record('pairing.cancelled', {
+      pairing_id: pairId,
+      device_id: session.deviceId,
+    });
     return { ok: true };
   }
 
@@ -226,6 +270,7 @@ export class PairingService {
   async revokeDevice(deviceId) {
     const revoked = await this.deviceStore.revokeDevice(deviceId);
     if (!revoked) throw pairingError('DEVICE_NOT_FOUND');
+    this.audit?.record('pairing.revoked', { device_id: deviceId });
     return { ok: true };
   }
 

@@ -79,9 +79,10 @@ await loadOtp();
 await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 
 const audit = new AuditLog({ filePath: auditPath });
+await audit.prune();
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
 const jobStore = new SqliteJobStore({ filePath: dbPath });
-const pairing = new PairingService({ loadOtp, deviceStore });
+const pairing = new PairingService({ loadOtp, deviceStore, audit });
 const jobs = new JobService({
   deviceStore,
   jobStore,

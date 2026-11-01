@@ -16,12 +16,13 @@ import {
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp, verifyTotp } from '../bridge/totp.js';
 
-async function startFixture({ now = () => Date.now(), pairingTtlMs = 120_000 } = {}) {
+async function startFixture({ now = () => Date.now(), pairingTtlMs = 120_000, audit } = {}) {
   const otpSecret = generateOtpSecret();
   const service = new PairingService({
     loadOtp: async () => ({ secret: otpSecret, keyId: 'key-test' }),
     now,
     pairingTtlMs,
+    audit,
   });
   const start = await service.startPairing({ bridgeUrl: 'https://bridge.test' });
   const phone = await generatePairingKeyPair();
@@ -192,4 +193,44 @@ test('device revocation is local and idempotent', async () => {
     () => fixture.service.revokeDevice('dev_missing'),
     (err) => err.code === 'DEVICE_NOT_FOUND',
   );
+});
+
+test('pairing emits redacted audit events', async () => {
+  const events = [];
+  const audit = {
+    record(event, fields) {
+      events.push({ event, ...fields });
+    },
+  };
+  const fixture = await claimedFixture({ audit });
+  const wrongSas = fixture.sas === '000000' ? '111111' : '000000';
+  assert.throws(
+    () => fixture.service.confirmPairing({ pairId: fixture.start.pair_id, sas: wrongSas }),
+    (err) => err.code === 'SAS_MISMATCH',
+  );
+  await fixture.service.confirmPairing({ pairId: fixture.start.pair_id, sas: fixture.sas });
+  await fixture.service.provisionOtp({
+    pairId: fixture.start.pair_id,
+    deviceId: fixture.claim.device_id,
+    proof: await provisionProof(fixture),
+  });
+  await fixture.service.revokeDevice(fixture.claim.device_id);
+
+  assert.deepEqual(
+    events.map((entry) => entry.event),
+    [
+      'pairing.started',
+      'pairing.claimed',
+      'pairing.rejected',
+      'pairing.confirmed',
+      'pairing.provisioned',
+      'pairing.revoked',
+    ],
+  );
+  assert.equal(events[2].reason, 'sas_mismatch');
+  for (const entry of events) {
+    for (const key of ['sas', 'phone_pub', 'keys', 'otpSecret', 'proof']) {
+      assert.equal(key in entry, false, key);
+    }
+  }
 });

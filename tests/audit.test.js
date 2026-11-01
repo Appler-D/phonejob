@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AuditLog } from '../bridge/audit.js';
@@ -76,4 +76,25 @@ test('audit swallows write failures', async (t) => {
   const audit = new AuditLog({ filePath: path.join(dir, 'bad\u0000name', 'audit.jsonl') });
   await audit.record('job.submitted', { job_id: 'job_test_audit' });
   await audit.close();
+});
+
+test('prune removes entries older than the retention window', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-audit-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'audit.jsonl');
+  const now = 1_761_900_000_000;
+  const old = new Date(now - 91 * 24 * 60 * 60_000).toISOString();
+  const recent = new Date(now - 24 * 60 * 60_000).toISOString();
+  const oldLine = JSON.stringify({ at: old, event: 'job.submitted', job_id: 'job_old' });
+  const recentLine = JSON.stringify({ at: recent, event: 'job.submitted', job_id: 'job_recent' });
+  await writeFile(file, `${oldLine}\n${recentLine}\n`);
+  await writeFile(`${file}.1`, `${oldLine}\n`);
+
+  const audit = new AuditLog({ filePath: file, now: () => now });
+  await audit.prune();
+
+  const current = (await readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(current.length, 1);
+  assert.equal(current[0].job_id, 'job_recent');
+  await assert.rejects(() => readFile(`${file}.1`, 'utf8'));
 });
