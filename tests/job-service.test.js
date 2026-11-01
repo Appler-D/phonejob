@@ -7,7 +7,8 @@ import path from 'node:path';
 import { MemoryDeviceStore } from '../bridge/device-store.js';
 import { MemoryJobStore } from '../bridge/job-store.js';
 import { JobService } from '../bridge/job-service.js';
-import { sealEnvelope } from '../bridge/crypto.js';
+import { canonicalJson, hmacSha256Base64Url, sealEnvelope } from '../bridge/crypto.js';
+import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp } from '../bridge/totp.js';
 
@@ -93,6 +94,8 @@ test('JobService accepts a valid ask job and writes pending/job.json', async (t)
 
   const stored = await f.service.getJob(envelope.job_id);
   assert.equal(stored.state, 'WAITING_CONFIRM');
+  assert.match(stored.challenge, /^\d{6}$/);
+  assert.equal(typeof stored.job_hash, 'string');
   assert.equal((await f.service.listJobs()).length, 1);
 
   const job = JSON.parse(
@@ -204,6 +207,108 @@ test('unknown and revoked devices are rejected', async (t) => {
   await f.deviceStore.revokeDevice(DEVICE_ID);
   const revoked = await makeEnvelope({ secret: f.otpSecret, workspace: f.workspace, now });
   await assert.rejects(() => f.service.submit(revoked), (err) => err.code === 'JOB_DEVICE_REJECTED');
+});
+
+test('approval requires the phone response and moves the job to approved', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_approve',
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob('job_test_approve');
+  const expected = computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge);
+  const wrong = expected === 'AAAAAAAA' ? 'BBBBBBBB' : 'AAAAAAAA';
+
+  await assert.rejects(
+    () => f.service.approveJob({ jobId: job.job_id, response: wrong }),
+    (err) => err.code === 'JOB_RESPONSE_INVALID',
+  );
+  assert.equal((await f.service.getJob(job.job_id)).state, 'WAITING_CONFIRM');
+
+  const approved = await f.service.approveJob({ jobId: job.job_id, response: expected });
+  assert.equal(approved.state, 'QUEUED');
+  assert.equal((await f.service.getJob(job.job_id)).state, 'QUEUED');
+  assert.equal(
+    JSON.parse(await readFile(path.join(f.inbox, 'approved', job.job_id, 'job.json'), 'utf8')).text,
+    'hello',
+  );
+  await assert.rejects(() => readFile(path.join(f.inbox, 'pending', job.job_id, 'job.json')));
+  await assert.rejects(
+    () => f.service.approveJob({ jobId: job.job_id, response: expected }),
+    (err) => err.code === 'JOB_NOT_WAITING',
+  );
+  assert.equal((await f.service.getJobDetail(job.job_id)).content.text, 'hello');
+});
+
+test('rejection moves the job to rejected', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_reject',
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const rejected = await f.service.rejectJob({ jobId: 'job_test_reject' });
+  assert.equal(rejected.state, 'REJECTED');
+  assert.equal((await f.service.getJob('job_test_reject')).state, 'REJECTED');
+  assert.equal(
+    JSON.parse(await readFile(path.join(f.inbox, 'rejected', 'job_test_reject', 'job.json'), 'utf8'))
+      .text,
+    'hello',
+  );
+  await assert.rejects(() => readFile(path.join(f.inbox, 'pending', 'job_test_reject', 'job.json')));
+});
+
+test('device status requires a signed request', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_status';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+
+  const ts = Math.floor(now / 1000);
+  const message = canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts });
+  const proof = await hmacSha256Base64Url(KEYS.kAuth, message);
+  const status = await f.service.getForDevice({ jobId, deviceId: DEVICE_ID, ts, proof });
+  assert.equal(status.state, 'WAITING_CONFIRM');
+  assert.match(status.challenge, /^\d{6}$/);
+  assert.equal(typeof status.job_hash, 'string');
+
+  await assert.rejects(
+    () => f.service.getForDevice({ jobId, deviceId: DEVICE_ID, ts, proof: 'bad' }),
+    (err) => err.code === 'JOB_STATUS_AUTH',
+  );
+  await assert.rejects(
+    () => f.service.getForDevice({ jobId, deviceId: DEVICE_ID, ts: ts - 121, proof }),
+    (err) => err.code === 'JOB_STATUS_AUTH',
+  );
+  await assert.rejects(
+    () => f.service.getForDevice({ jobId, deviceId: 'dev_unknown_1', ts, proof }),
+    (err) => err.code === 'JOB_DEVICE_REJECTED',
+  );
+
+  const missingProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: 'job_missing_1', ts }),
+  );
+  await assert.rejects(
+    () => f.service.getForDevice({ jobId: 'job_missing_1', deviceId: DEVICE_ID, ts, proof: missingProof }),
+    (err) => err.code === 'JOB_NOT_FOUND',
+  );
 });
 
 test('non-ask intents are high risk', async (t) => {

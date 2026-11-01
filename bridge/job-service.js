@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
-import { randomBytes } from 'node:crypto';
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { openEnvelope } from './crypto.js';
+import { canonicalJson, hmacSha256Base64Url, openEnvelope } from './crypto.js';
+import { computeConfirmationResponse, responsesEqual } from './confirm.js';
 import { verifyTotp } from './totp.js';
 
 const JOB_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -24,6 +25,13 @@ function isObject(value) {
 function normalizePath(value) {
   const resolved = path.resolve(String(value));
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function safeEqualBase64(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const a = Buffer.from(left, 'base64url');
+  const b = Buffer.from(right, 'base64url');
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export class JobService {
@@ -144,6 +152,8 @@ export class JobService {
       reply: { want, max_bytes: maxBytes },
     };
     await writeFile(path.join(tempDir, 'job.json'), JSON.stringify(jobJson, null, 2), 'utf8');
+    const jobHash = createHash('sha256').update(canonicalJson(jobJson), 'utf8').digest('base64url');
+    const challenge = String(randomInt(100000, 1000000));
 
     const saved = await this.jobStore.saveJobWithSequence({
       job: {
@@ -154,6 +164,8 @@ export class JobService {
         intent: job.intent,
         workspace,
         inbox_path: jobDir,
+        challenge,
+        job_hash: jobHash,
         created_at: now,
         updated_at: now,
       },
@@ -180,6 +192,108 @@ export class JobService {
       }
     }
     return { job_id, state: 'WAITING_CONFIRM', risk };
+  }
+
+  async getForDevice({ jobId, deviceId, ts, proof }) {
+    if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) throw jobError('JOB_NOT_FOUND');
+    if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
+      throw jobError('JOB_DEVICE_REJECTED');
+    }
+    if (!Number.isInteger(ts) || Math.abs(this.now() / 1000 - ts) > 120) {
+      throw jobError('JOB_STATUS_AUTH');
+    }
+    const device = await this.deviceStore.getDevice(deviceId);
+    if (!device || device.revoked) throw jobError('JOB_DEVICE_REJECTED');
+    const message = canonicalJson({
+      type: 'job-status-v1',
+      device_id: deviceId,
+      job_id: jobId,
+      ts,
+    });
+    const expected = await hmacSha256Base64Url(device.keys.kAuth, message);
+    if (!safeEqualBase64(proof, expected)) throw jobError('JOB_STATUS_AUTH');
+    const job = await this.jobStore.getJob(jobId);
+    if (!job || job.device_id !== deviceId) throw jobError('JOB_NOT_FOUND');
+    return {
+      job_id: job.job_id,
+      state: job.state,
+      challenge: job.challenge,
+      job_hash: job.job_hash,
+      risk: job.risk,
+    };
+  }
+
+  async getJobDetail(jobId) {
+    if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) throw jobError('JOB_NOT_FOUND');
+    const job = await this.jobStore.getJob(jobId);
+    if (!job) throw jobError('JOB_NOT_FOUND');
+    let content = null;
+    try {
+      content = JSON.parse(await readFile(path.join(job.inbox_path, 'job.json'), 'utf8'));
+    } catch {
+      content = null;
+    }
+    return { ...job, content };
+  }
+
+  async approveJob({ jobId, response }) {
+    if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) throw jobError('JOB_NOT_FOUND');
+    const job = await this.jobStore.getJob(jobId);
+    if (!job) throw jobError('JOB_NOT_FOUND');
+    if (job.state !== 'WAITING_CONFIRM') throw jobError('JOB_NOT_WAITING');
+    if (!job.challenge || !job.job_hash) throw jobError('JOB_INVALID');
+    const device = await this.deviceStore.getDevice(job.device_id);
+    if (!device || device.revoked) throw jobError('JOB_DEVICE_REJECTED');
+    const expected = computeConfirmationResponse(device.keys.kConfirm, job.job_hash, job.challenge);
+    if (!responsesEqual(response, expected)) throw jobError('JOB_RESPONSE_INVALID');
+
+    const pendingDir = path.join(this.inboxDir, 'pending', jobId);
+    const approvedDir = path.join(this.inboxDir, 'approved', jobId);
+    await mkdir(path.dirname(approvedDir), { recursive: true });
+    try {
+      await rename(pendingDir, approvedDir);
+    } catch {
+      throw jobError('JOB_MOVE_FAILED');
+    }
+    const decidedAt = this.now();
+    const updated = await this.jobStore.decideJob({
+      jobId,
+      state: 'QUEUED',
+      inboxPath: approvedDir,
+      decidedAt,
+    });
+    if (!updated) {
+      await rename(approvedDir, pendingDir).catch(() => {});
+      throw jobError('JOB_NOT_WAITING');
+    }
+    return { job_id: jobId, state: 'QUEUED' };
+  }
+
+  async rejectJob({ jobId }) {
+    if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) throw jobError('JOB_NOT_FOUND');
+    const job = await this.jobStore.getJob(jobId);
+    if (!job) throw jobError('JOB_NOT_FOUND');
+    if (job.state !== 'WAITING_CONFIRM') throw jobError('JOB_NOT_WAITING');
+    const pendingDir = path.join(this.inboxDir, 'pending', jobId);
+    const rejectedDir = path.join(this.inboxDir, 'rejected', jobId);
+    await mkdir(path.dirname(rejectedDir), { recursive: true });
+    try {
+      await rename(pendingDir, rejectedDir);
+    } catch {
+      throw jobError('JOB_MOVE_FAILED');
+    }
+    const decidedAt = this.now();
+    const updated = await this.jobStore.decideJob({
+      jobId,
+      state: 'REJECTED',
+      inboxPath: rejectedDir,
+      decidedAt,
+    });
+    if (!updated) {
+      await rename(rejectedDir, pendingDir).catch(() => {});
+      throw jobError('JOB_NOT_WAITING');
+    }
+    return { job_id: jobId, state: 'REJECTED' };
   }
 
   listJobs() {

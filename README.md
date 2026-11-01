@@ -10,7 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对、TOTP 与发送任务 / 服务端 job 信封校验与 pending 落盘）；任务确认、文件分片、DSH 插件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对、TOTP、发送任务与挑战响应 / 服务端 job 校验、pending 落盘、挑战码与电脑审批）；DSH 执行、文件分片未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
@@ -20,19 +20,20 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/pairing.js`：start → claim（SAS 证明）→ 本地确认 SAS → `K_otp` 下发 → 设备登记/吊销
 - `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob；内存 store 供测试
-- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、`pending/<job_id>/job.json` 原子落盘
-- `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留）
-- `bridge/servers.js`：API 端口放 `health/claim/provision/job`；本地端口放 `start/status/confirm/cancel/devices/jobs`，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
-- `bridge/local/`：PC 配对首页（`/`）与本地确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
+- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、`pending/<job_id>/job.json` 原子落盘、挑战码/`job_hash`、手机签名状态查询、审批/拒绝并移动目录
+- `bridge/confirm.js`：HMAC-SHA256 + Base32 的 8 位确认码（绑定 `job_hash` 与挑战码）
+- `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留；challenge/job_hash/decided_at）
+- `bridge/servers.js`：API 端口放 `health/claim/provision/job` + 带设备签名的 `GET /api/job/:id`；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
+- `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
 - `pwa/store.js`：IndexedDB 保存设备元数据、TOTP 密钥，以及不可导出的 `kEnc/kConfirm/kAuth`
-- `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；发送任务表单（工作区从二维码预填、seq 持久化、等待电脑确认）
+- `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；发送任务表单（工作区从二维码预填、seq 持久化）；轮询任务状态、显示挑战码与手机响应码
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；38 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 发送任务；刷新后从 IndexedDB 继续计算；`K_otp`/`kEnc`/`kConfirm` 均 `extractable:false`；PC 首页 QR + 确认页链接；SQLite 设备/job 持久化；PWA 提交的 job 落 `pending/`、重启后仍在
-- 下一步：挑战码/审批、DSH 插件认领/回传、文件分片、Service Worker/Web Push、iOS Safari 实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；44 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 发送任务 + 挑战码/响应 + 电脑审批；`pending/` 移到 `approved/`、状态 `QUEUED`；刷新后从 IndexedDB 继续计算；`K_otp`/`kEnc`/`kConfirm` 均 `extractable:false`；SQLite 设备/job 持久化
+- 下一步：DSH 插件认领/执行/回传、文件分片、确认超时/自动拒绝、Service Worker/Web Push、iOS Safari 实测
 
 ```bash
 npm install
@@ -56,6 +57,8 @@ node bridge/index.js
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 
 配对流程：打开 `http://127.0.0.1:7789/` → 确认 Bridge URL（本机 `http://127.0.0.1:7788`）→ 生成二维码 → 手机扫描打开 PWA → 在电脑上打开确认页核对 SAS。二维码需要配置 `PHONEJOB_PWA_ORIGIN`；未配置时仍可用 PWA 手动粘贴配对信息。二维码会带上 `PHONEJOB_WORKSPACES`，PWA 发送任务时自动预填工作区。
+
+审批流程：PWA 发送任务后显示电脑挑战码与手机响应码；打开电脑 `http://127.0.0.1:7789/jobs`，选择任务，核对挑战码，输入手机响应码并批准。确认码绑定 `job_hash`，错误响应不会移动 `pending/`。
 
 `bridge/index.js` 首次启动也会加载/生成 `K_otp`；本地管理 token 写到 `%DSH_HOME%\phonejob\admin.token`，不打印到日志。
 

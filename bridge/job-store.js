@@ -28,6 +28,16 @@ export class MemoryJobStore {
     return true;
   }
 
+  async decideJob({ jobId, state, inboxPath, decidedAt }) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state !== 'WAITING_CONFIRM') return false;
+    job.state = state;
+    job.inbox_path = inboxPath;
+    job.decided_at = decidedAt;
+    job.updated_at = decidedAt;
+    return true;
+  }
+
   async close() {}
 }
 
@@ -46,6 +56,9 @@ export class SqliteJobStore {
         intent TEXT NOT NULL,
         workspace TEXT NOT NULL,
         inbox_path TEXT NOT NULL,
+        challenge TEXT,
+        job_hash TEXT,
+        decided_at INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -59,6 +72,10 @@ export class SqliteJobStore {
       );
       CREATE INDEX IF NOT EXISTS seen_messages_ts ON seen_messages (device_id, seen_at);
     `);
+    const columns = new Set(this.db.prepare('PRAGMA table_info(jobs)').all().map((column) => column.name));
+    if (!columns.has('challenge')) this.db.exec('ALTER TABLE jobs ADD COLUMN challenge TEXT');
+    if (!columns.has('job_hash')) this.db.exec('ALTER TABLE jobs ADD COLUMN job_hash TEXT');
+    if (!columns.has('decided_at')) this.db.exec('ALTER TABLE jobs ADD COLUMN decided_at INTEGER');
   }
 
   async getJob(jobId) {
@@ -98,8 +115,8 @@ export class SqliteJobStore {
         .run(job.device_id, seq, nonce, now);
       this.db
         .prepare(`
-          INSERT INTO jobs (job_id, device_id, state, risk, intent, workspace, inbox_path, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO jobs (job_id, device_id, state, risk, intent, workspace, inbox_path, challenge, job_hash, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           job.job_id,
@@ -109,6 +126,8 @@ export class SqliteJobStore {
           job.intent,
           job.workspace,
           job.inbox_path,
+          job.challenge ?? null,
+          job.job_hash ?? null,
           job.created_at,
           job.updated_at,
         );
@@ -122,6 +141,17 @@ export class SqliteJobStore {
       }
       return false;
     }
+  }
+
+  async decideJob({ jobId, state, inboxPath, decidedAt }) {
+    const result = this.db
+      .prepare(`
+        UPDATE jobs
+        SET state = ?, inbox_path = ?, decided_at = ?, updated_at = ?
+        WHERE job_id = ? AND state = 'WAITING_CONFIRM'
+      `)
+      .run(state, inboxPath, decidedAt, decidedAt, jobId);
+    return result.changes > 0;
   }
 
   async close() {

@@ -21,6 +21,7 @@ import {
   pairingTranscript,
   sealEnvelope,
 } from '../bridge/crypto.js';
+import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp } from '../bridge/totp.js';
 
@@ -236,6 +237,86 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   assert.equal(parse(jobList).jobs.length, 1);
   assert.equal(parse(jobList).jobs[0].job_id, jobId);
 
+  const statusTs = Math.floor(Date.now() / 1000);
+  const statusProof = await hmacSha256Base64Url(
+    phone.keys.kAuth,
+    canonicalJson({
+      type: 'job-status-v1',
+      device_id: phone.claim.device_id,
+      job_id: jobId,
+      ts: statusTs,
+    }),
+  );
+  const phoneStatus = await request(api, `/api/job/${jobId}`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(statusTs),
+      'X-PhoneJob-Proof': statusProof,
+    },
+  });
+  assert.equal(phoneStatus.status, 200, phoneStatus.body);
+  const jobStatusBody = parse(phoneStatus);
+  assert.equal(jobStatusBody.state, 'WAITING_CONFIRM');
+  assert.match(jobStatusBody.challenge, /^\d{6}$/);
+  assert.ok(jobStatusBody.job_hash);
+
+  const detail = await request(local, `/api/jobs/${jobId}`, {
+    headers: { 'X-PhoneJob-Admin': 'test-admin' },
+  });
+  assert.equal(detail.status, 200);
+  const detailBody = parse(detail);
+  assert.equal(detailBody.content.text, 'hello http');
+  assert.equal(detailBody.challenge, jobStatusBody.challenge);
+  assert.equal(detailBody.job_hash, jobStatusBody.job_hash);
+
+  const expectedResponse = computeConfirmationResponse(
+    phone.keys.kConfirm,
+    jobStatusBody.job_hash,
+    jobStatusBody.challenge,
+  );
+  const wrongResponse = expectedResponse === 'AAAAAAAA' ? 'BBBBBBBB' : 'AAAAAAAA';
+  const wrongApprove = await request(local, `/api/jobs/${jobId}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-PhoneJob-Admin': 'test-admin',
+      Origin: local,
+    },
+    body: JSON.stringify({ response: wrongResponse }),
+  });
+  assert.equal(wrongApprove.status, 400);
+  assert.equal(parse(wrongApprove).error, 'JOB_RESPONSE_INVALID');
+
+  const approve = await request(local, `/api/jobs/${jobId}/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-PhoneJob-Admin': 'test-admin',
+      Origin: local,
+    },
+    body: JSON.stringify({ response: expectedResponse }),
+  });
+  assert.equal(approve.status, 200, approve.body);
+  assert.equal(parse(approve).state, 'QUEUED');
+  const approvedJson = JSON.parse(
+    await readFile(path.join(inboxDir, 'approved', jobId, 'job.json'), 'utf8'),
+  );
+  assert.equal(approvedJson.text, 'hello http');
+  await assert.rejects(() => readFile(path.join(inboxDir, 'pending', jobId, 'job.json')));
+  const jobListAfter = await request(local, '/api/jobs', {
+    headers: { 'X-PhoneJob-Admin': 'test-admin' },
+  });
+  assert.equal(parse(jobListAfter).jobs[0].state, 'QUEUED');
+  const statusAfter = await request(api, `/api/job/${jobId}`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(statusTs),
+      'X-PhoneJob-Proof': statusProof,
+    },
+  });
+  assert.equal(statusAfter.status, 200);
+  assert.equal(parse(statusAfter).state, 'QUEUED');
+
   const healthAfter = await request(api, '/api/health');
   assert.equal(parse(healthAfter).paired_devices, 1);
 
@@ -429,11 +510,12 @@ test('API only allows the configured PWA origin', async (t) => {
     headers: {
       Origin: origin,
       'Access-Control-Request-Method': 'POST',
-      'Access-Control-Request-Headers': 'content-type',
+      'Access-Control-Request-Headers': 'content-type, x-phonejob-device, x-phonejob-ts, x-phonejob-proof',
     },
   });
   assert.equal(preflight.status, 204);
   assert.equal(preflight.headers['access-control-allow-origin'], origin);
+  assert.match(preflight.headers['access-control-allow-headers'], /X-PhoneJob-Device/i);
 
   const health = await request(api, '/api/health', { headers: { Origin: origin } });
   assert.equal(health.headers['access-control-allow-origin'], origin);

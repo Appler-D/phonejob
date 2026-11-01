@@ -181,6 +181,35 @@ export async function openOtpProvisioning(kEnc, envelope) {
   return { otpSecret, keyId: payload.key_id, issuedAt: payload.issued_at };
 }
 
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+export function base32(bytes) {
+  let value = 0;
+  let bits = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  }
+  return output;
+}
+
+export async function hmacWithKey(key, message) {
+  return new Uint8Array(await subtle.sign('HMAC', key, encoder.encode(message)));
+}
+
+export async function computeReceiptResponse(key, jobHash, challenge) {
+  const mac = await hmacWithKey(key, `confirm-v1\n${jobHash}\n${challenge}`);
+  return base32(mac).slice(0, 8);
+}
+
 export async function importOtpKey(secret) {
   if (!(secret instanceof Uint8Array) || secret.length !== 32) {
     throw new Error('Invalid OTP secret length');

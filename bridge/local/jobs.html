@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="phonejob-admin-token" content="__ADMIN_TOKEN__">
+  <title>PhoneJob 待确认任务</title>
+  <link rel="stylesheet" href="/local/jobs.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>待确认任务</h1>
+      <p class="hint"><a href="/">← 配对首页</a></p>
+    </header>
+
+    <p id="list-error" class="error" role="alert"></p>
+    <p id="empty" class="hint" hidden>暂无待确认任务</p>
+    <div id="jobs" class="jobs"></div>
+
+    <section id="detail" hidden>
+      <h2>任务详情</h2>
+      <p id="detail-meta" class="hint"></p>
+      <pre id="detail-text"></pre>
+      <dl id="detail-target"></dl>
+      <p class="challenge-line">挑战码：<strong id="detail-challenge" class="challenge"></strong></p>
+      <label for="detail-response">手机响应码</label>
+      <input id="detail-response" maxlength="16" autocomplete="off" spellcheck="false" autocapitalize="characters">
+      <div class="actions">
+        <button id="approve" type="button">批准</button>
+        <button id="reject" type="button" class="secondary">拒绝</button>
+      </div>
+      <p id="detail-status" class="status"></p>
+      <p id="detail-error" class="error" role="alert"></p>
+    </section>
+  </main>
+  <script src="/local/jobs.js" defer></script>
+</body>
+</html>

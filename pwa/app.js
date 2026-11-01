@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import {
   canonicalJson,
+  computeReceiptResponse,
   computeSas,
   derivePairingKeys,
   deriveSharedSecret,
   fromBase64Url,
   generatePairingKeyPair,
   hmacSha256Base64Url,
+  hmacWithKey,
   importAesKey,
   importHmacKey,
   importOtpKey,
@@ -45,10 +47,15 @@ const jobText = document.getElementById('job-text');
 const jobSend = document.getElementById('job-send');
 const jobStatusEl = document.getElementById('job-status');
 const jobErrorEl = document.getElementById('job-error');
+const jobWatch = document.getElementById('job-watch');
+const jobChallengeEl = document.getElementById('job-challenge');
+const jobResponseEl = document.getElementById('job-response');
+const jobStateEl = document.getElementById('job-state');
 
 let currentDevice = null;
 let currentKey = null;
 let totpTimer = null;
+let jobWatchTimer = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -77,6 +84,21 @@ function stopTotp() {
   }
 }
 
+function stopJobWatch() {
+  if (jobWatchTimer) {
+    clearInterval(jobWatchTimer);
+    jobWatchTimer = null;
+  }
+}
+
+function hideJobWatch() {
+  stopJobWatch();
+  jobWatch.hidden = true;
+  jobChallengeEl.textContent = '';
+  jobResponseEl.textContent = '';
+  jobStateEl.textContent = '';
+}
+
 async function renderTotp() {
   if (!currentKey) return;
   const now = Date.now();
@@ -98,6 +120,11 @@ function showTotp(device, key) {
   stopTotp();
   renderTotp();
   totpTimer = setInterval(renderTotp, 1000);
+  if (device.last_job_id) {
+    watchJob(device.last_job_id);
+  } else {
+    hideJobWatch();
+  }
 }
 
 function showPair() {
@@ -112,6 +139,7 @@ function showPair() {
   setError('');
   setJobStatus('');
   setJobError('');
+  hideJobWatch();
 }
 
 function parsePayload(raw) {
@@ -266,6 +294,74 @@ async function startPairing() {
   }
 }
 
+async function fetchJobStatus(jobId) {
+  const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+  if (!deviceKeys) throw new Error('设备密钥缺失，请重新配对');
+  const ts = Math.floor(Date.now() / 1000);
+  const proof = toBase64Url(
+    await hmacWithKey(
+      deviceKeys.auth,
+      canonicalJson({
+        type: 'job-status-v1',
+        device_id: currentDevice.device_id,
+        job_id: jobId,
+        ts,
+      }),
+    ),
+  );
+  const response = await fetch(
+    `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}`,
+    {
+      headers: {
+        'X-PhoneJob-Device': currentDevice.device_id,
+        'X-PhoneJob-Ts': String(ts),
+        'X-PhoneJob-Proof': proof,
+      },
+    },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  return body;
+}
+
+async function watchJob(jobId) {
+  stopJobWatch();
+  jobWatch.hidden = false;
+  jobStateEl.textContent = '等待电脑确认…';
+  const tick = async () => {
+    try {
+      const status = await fetchJobStatus(jobId);
+      if (status.challenge && status.job_hash) {
+        jobChallengeEl.textContent = status.challenge;
+        const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+        if (deviceKeys) {
+          jobResponseEl.textContent = await computeReceiptResponse(
+            deviceKeys.confirm,
+            status.job_hash,
+            status.challenge,
+          );
+        }
+      }
+      if (status.state === 'QUEUED') {
+        jobStateEl.textContent = '电脑已批准，等待执行';
+        stopJobWatch();
+      } else if (status.state === 'REJECTED') {
+        jobStateEl.textContent = '电脑已拒绝';
+        stopJobWatch();
+      } else if (status.state === 'DONE') {
+        jobStateEl.textContent = '已完成';
+        stopJobWatch();
+      } else {
+        jobStateEl.textContent = '等待电脑确认…';
+      }
+    } catch (err) {
+      jobStateEl.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
+    }
+  };
+  jobWatchTimer = setInterval(tick, 2000);
+  tick();
+}
+
 async function sendJob() {
   if (!currentDevice || !currentKey) {
     setJobError('请先完成配对');
@@ -322,9 +418,11 @@ async function sendJob() {
     const body = await response.json().catch(() => null);
     if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
     currentDevice.seq = seq;
+    currentDevice.last_job_id = body.job_id;
     await putDevice(currentDevice);
     setJobStatus(`已提交 ${body.job_id}，状态 ${body.state}`);
     jobText.value = '';
+    watchJob(body.job_id);
   } catch (err) {
     setJobError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
   } finally {

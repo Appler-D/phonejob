@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as bridge from '../bridge/crypto.js';
+import { computeConfirmationResponse } from '../bridge/confirm.js';
 import { hotp as bridgeHotp, verifyTotp } from '../bridge/totp.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import * as pwa from '../pwa/crypto.js';
@@ -119,6 +120,28 @@ test('PWA seals a job envelope the bridge can open', async () => {
 
   const hmacKey = await pwa.importHmacKey(phoneKeys.kConfirm);
   await assert.rejects(() => crypto.subtle.exportKey('raw', hmacKey));
+});
+
+test('PWA confirmation response and status proof match the bridge', async () => {
+  const { phoneKeys } = await keysForBothSides();
+  const confirmKey = await pwa.importHmacKey(phoneKeys.kConfirm);
+  const authKey = await pwa.importHmacKey(phoneKeys.kAuth);
+
+  assert.equal(
+    await pwa.computeReceiptResponse(confirmKey, 'job-hash', '123456'),
+    computeConfirmationResponse(phoneKeys.kConfirm, 'job-hash', '123456'),
+  );
+
+  const statusMessage = bridge.canonicalJson({
+    type: 'job-status-v1',
+    device_id: 'dev_test_device_1',
+    job_id: 'job_test_status',
+    ts: 1_761_900_000,
+  });
+  assert.equal(
+    pwa.toBase64Url(await pwa.hmacWithKey(authKey, statusMessage)),
+    await bridge.hmacSha256Base64Url(phoneKeys.kAuth, statusMessage),
+  );
 });
 
 test('PWA base64url and canonical JSON match the bridge', () => {

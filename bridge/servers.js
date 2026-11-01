@@ -12,6 +12,9 @@ const LOCAL_JS = readFileSync(path.join(LOCAL_DIR, 'app.js'), 'utf8');
 const LOCAL_HOME_HTML = readFileSync(path.join(LOCAL_DIR, 'home.html'), 'utf8');
 const LOCAL_HOME_JS = readFileSync(path.join(LOCAL_DIR, 'home.js'), 'utf8');
 const LOCAL_HOME_CSS = readFileSync(path.join(LOCAL_DIR, 'home.css'), 'utf8');
+const LOCAL_JOBS_HTML = readFileSync(path.join(LOCAL_DIR, 'jobs.html'), 'utf8');
+const LOCAL_JOBS_JS = readFileSync(path.join(LOCAL_DIR, 'jobs.js'), 'utf8');
+const LOCAL_JOBS_CSS = readFileSync(path.join(LOCAL_DIR, 'jobs.css'), 'utf8');
 const MAX_BODY_BYTES = 16 * 1024;
 
 const ERROR_STATUS = {
@@ -36,6 +39,11 @@ const ERROR_STATUS = {
   JOB_FILES_UNSUPPORTED: 400,
   JOB_REPLAY: 409,
   JOB_INBOX_FAILED: 500,
+  JOB_NOT_FOUND: 404,
+  JOB_NOT_WAITING: 409,
+  JOB_RESPONSE_INVALID: 400,
+  JOB_STATUS_AUTH: 401,
+  JOB_MOVE_FAILED: 500,
 };
 
 const CSP = [
@@ -212,7 +220,8 @@ export function createBridgeServers({
     return {
       'Access-Control-Allow-Origin': allowedPwaOrigin,
       'Access-Control-Allow-Methods': 'GET, POST',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers':
+        'Content-Type, X-PhoneJob-Device, X-PhoneJob-Ts, X-PhoneJob-Proof',
       'Access-Control-Max-Age': '600',
       Vary: 'Origin',
     };
@@ -295,6 +304,21 @@ export function createBridgeServers({
         sendJson(res, 200, result, corsHeaders(req));
         return;
       }
+      const jobStatus = url.pathname.match(/^\/api\/job\/([A-Za-z0-9_-]{8,64})$/);
+      if (req.method === 'GET' && jobStatus) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
+          return;
+        }
+        const result = await jobs.getForDevice({
+          jobId: jobStatus[1],
+          deviceId: req.headers['x-phonejob-device'],
+          ts: Number(req.headers['x-phonejob-ts']),
+          proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
+        return;
+      }
       sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
     } catch (err) {
       sendError(res, err, corsHeaders(req));
@@ -311,6 +335,11 @@ export function createBridgeServers({
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/jobs') {
+        sendHtml(res, 200, LOCAL_JOBS_HTML.replace('__ADMIN_TOKEN__', escapeHtml(adminToken)));
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/local/home.js') {
         sendJs(res, 200, LOCAL_HOME_JS);
         return;
@@ -318,6 +347,16 @@ export function createBridgeServers({
 
       if (req.method === 'GET' && url.pathname === '/local/home.css') {
         sendCss(res, 200, LOCAL_HOME_CSS);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/local/jobs.js') {
+        sendJs(res, 200, LOCAL_JOBS_JS);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/local/jobs.css') {
+        sendCss(res, 200, LOCAL_JOBS_CSS);
         return;
       }
 
@@ -405,6 +444,42 @@ export function createBridgeServers({
         }
         checkAdmin(req);
         sendJson(res, 200, { jobs: await jobs.listJobs() });
+        return;
+      }
+
+      const jobDetail = url.pathname.match(/^\/api\/jobs\/([A-Za-z0-9_-]{8,64})$/);
+      if (req.method === 'GET' && jobDetail) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' });
+          return;
+        }
+        checkAdmin(req);
+        sendJson(res, 200, await jobs.getJobDetail(jobDetail[1]));
+        return;
+      }
+
+      const jobApprove = url.pathname.match(/^\/api\/jobs\/([A-Za-z0-9_-]{8,64})\/approve$/);
+      if (req.method === 'POST' && jobApprove) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' });
+          return;
+        }
+        checkOrigin(req, allowedOrigins());
+        checkAdmin(req);
+        const body = await readJson(req);
+        sendJson(res, 200, await jobs.approveJob({ jobId: jobApprove[1], response: body.response }));
+        return;
+      }
+
+      const jobReject = url.pathname.match(/^\/api\/jobs\/([A-Za-z0-9_-]{8,64})\/reject$/);
+      if (req.method === 'POST' && jobReject) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' });
+          return;
+        }
+        checkOrigin(req, allowedOrigins());
+        checkAdmin(req);
+        sendJson(res, 200, await jobs.rejectJob({ jobId: jobReject[1] }));
         return;
       }
 

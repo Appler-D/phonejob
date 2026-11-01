@@ -240,12 +240,14 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 
 ### 7.3 挑战码机制（"只有电脑确认正确才执行"）
 1. bridge 计算 `challenge = 6 位随机数`（`crypto.randomInt(100000,1000000)`），与 `job_hash = SHA256(canonical(job.json))` 一起存入待确认表。
-2. **电脑屏幕**弹出确认窗（托盘 + 本地 `127.0.0.1:7789/confirm` 页面），显示：任务摘要、文件列表与短哈希、挑战码、输入框。
-3. 手机详情页同时显示同一个挑战码（经加密通道下发）→ 用户在手机上打开自己的 App，得到 `response = Base32(HMAC-SHA256(K_confirm, "confirm-v1" || job_hash || challenge))[0:8]`。
-4. 用户把 8 位 `response` 抄进电脑确认窗 → bridge 校验 → 通过后显示「批准执行」按钮。
+2. **电脑屏幕**的本地 `127.0.0.1:7789/jobs` 页面显示任务摘要、文件列表、挑战码与输入框。
+3. 手机任务详情页显示同一个挑战码（经状态接口下发）→ 用户得到 `response = Base32(HMAC-SHA256(K_confirm, "confirm-v1\n" + job_hash + "\n" + challenge))[0:8]`。
+4. 用户把 8 位 `response` 抄进电脑页面 → bridge 校验 → 通过后点击「批准」。
 5. 点击批准 → bridge 把 job 移入 `approved/`，状态 `QUEUED`。
 
 > 这一步的价值：即使手机被远程控制、或隧道被完全攻破，攻击者也必须**让电脑前的人看到并输入一个只有手里设备才能算出的码**。
+>
+> 当前实现未做确认超时自动拒绝；手机状态响应未做 E2E 封装，靠两端挑战码人眼比对和响应码绑定 job_hash。
 
 ### 7.4 密码学参数（固定，不得自行更改）
 | 用途 | 算法 |
@@ -303,13 +305,13 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | POST | `/api/pair/provision` | 配对确认后，电脑用 `K_enc` 下发电脑生成的 `K_otp` |
 | POST | `/api/job` | 提交密文信封（≤ 1MB 元数据；文件走分片） |
 | PUT | `/api/job/:id/file/:idx` | 分片上传密文块（`Content-Range`） |
-| GET | `/api/job/:id` | 查询状态（需设备会话令牌） |
+| GET | `/api/job/:id` | 查询状态 + 挑战码（设备签名 `X-PhoneJob-Device/Ts/Proof`） |
 | GET | `/api/job/:id/result` | 取加密结果 |
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
 > PWA 独立 origin 时，API 只允许配置的 `PHONEJOB_PWA_ORIGIN` 的 CORS；本地 7789 不设 CORS。
 >
-> 本地 7789 另有 `GET /api/jobs`（admin），用于后续确认 UI；P1 只落 `pending/` + `WAITING_CONFIRM`，文件分片未实现。
+> 本地 7789 另有 `GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/approve|reject`（admin）；审批把目录从 `pending/` 移到 `approved/` 或 `rejected/`。文件分片仍未实现。
 
 ### 8.2 设备会话令牌
 - 每次连接先 `POST /api/session`：服务端发一次性 nonce，手机用
@@ -473,9 +475,10 @@ cloudflared tunnel run phonejob
 | PWA 任务表单 | 已实现文本任务；工作区从配对二维码预填；文件分片未实现 |
 | 文件通道 | P1 暂不支持；`job.files` 非空拒绝，下一阶段做分片 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
-| 任务确认 | 当前落 `pending/` + `WAITING_CONFIRM`；挑战码/审批/DSH 执行下一步 |
+| 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED`；DSH 执行下一步 |
+| 确认超时 | 尚未自动拒绝；P2 后续补 |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.4 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；服务端 job 校验；PWA 发送文本任务；其余评审项待定*
+*版本 v1.5 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite 持久化；PC 配对首页/QR；job 校验；PWA 发送任务 + 挑战响应；电脑审批与 approved/；其余评审项待定*
