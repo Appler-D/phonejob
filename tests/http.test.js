@@ -53,7 +53,7 @@ function parse(response) {
   return JSON.parse(response.body);
 }
 
-async function setup(t) {
+async function setup(t, { pwaOrigin = null } = {}) {
   const otpSecret = generateOtpSecret();
   const pairing = new PairingService({
     loadOtp: async () => ({ secret: otpSecret, keyId: 'key-test' }),
@@ -64,6 +64,7 @@ async function setup(t) {
     apiPort: 0,
     localPort: 0,
     version: 'test',
+    pwaOrigin,
   });
   await servers.start();
   t.after(() => servers.close());
@@ -316,8 +317,8 @@ test('API errors are mapped without leaking internals', async (t) => {
     device_id: phone.claim.device_id,
     proof: await phone.provisionProof(),
   });
-  assert.equal(tooEarly.status, 409);
-  assert.equal(parse(tooEarly).error, 'PAIRING_NOT_CONFIRMED');
+  assert.equal(tooEarly.status, 202);
+  assert.equal(parse(tooEarly).state, 'waiting');
 
   const badJson = await request(api, '/api/pair/claim', {
     method: 'POST',
@@ -326,6 +327,40 @@ test('API errors are mapped without leaking internals', async (t) => {
   });
   assert.equal(badJson.status, 400);
   assert.equal(parse(badJson).error, 'invalid_json');
+});
+
+test('API only allows the configured PWA origin', async (t) => {
+  const { api, local } = await setup(t, { pwaOrigin: 'http://127.0.0.1:8000' });
+  const origin = 'http://127.0.0.1:8000';
+
+  const preflight = await request(api, '/api/pair/claim', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: origin,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers['access-control-allow-origin'], origin);
+
+  const health = await request(api, '/api/health', { headers: { Origin: origin } });
+  assert.equal(health.headers['access-control-allow-origin'], origin);
+
+  const evil = await request(api, '/api/health', { headers: { Origin: 'https://evil.test' } });
+  assert.equal(evil.headers['access-control-allow-origin'], undefined);
+
+  const evilPreflight = await request(api, '/api/pair/claim', {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://evil.test' },
+  });
+  assert.equal(evilPreflight.status, 403);
+
+  const localDevices = await request(local, '/api/devices', {
+    headers: { 'X-PhoneJob-Admin': 'test-admin', Origin: origin },
+  });
+  assert.equal(localDevices.status, 200);
+  assert.equal(localDevices.headers['access-control-allow-origin'], undefined);
 });
 
 function localUrlPath(start, token) {

@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "keys:init": "node bridge/key-init.js"
+    "keys:init": "node bridge/key-init.js",
+    "pwa:dev": "node tools/serve-pwa.js"
   }
 }

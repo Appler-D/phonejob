@@ -92,7 +92,10 @@
   3. `#/new` 新建任务（意图选择、文本、文件、目标程序）
   4. `#/job/:id` 详情（挑战码、确认码输入、结果下载）
   5. `#/devices` 设备与吊销
-- 存储：IndexedDB；`K_otp` / `K_confirm` 以**不可导出 CryptoKey** 形式保存（`extractable:false`）。`K_otp` 由电脑端生成并在配对时下发；手机端只加载 TOTP 公式并保存为不可导出 HMAC 密钥，不生成密码子。
+
+> P0 已实现「配对 + TOTP」单页；任务列表、新建、详情、设备页在任务通道阶段补齐。
+
+- 存储：IndexedDB；`K_otp` 以**不可导出 HMAC CryptoKey** 保存（`extractable:false`），由电脑端生成、配对时下发；`K_confirm`/`K_enc` 在配对会话内存中使用，任务通道阶段再按需持久化。手机端只加载 TOTP 公式，不生成密码子。
 - 推送：Web Push（仅 HTTPS 源可用）；无推送权限时前端 30s 轮询。
 
 ### 4.2 隧道 / 中继（不自研服务器）
@@ -208,7 +211,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 ## 7. 安全设计（核心）
 
 ### 7.1 配对（一次性，带 SAS 人眼校验）
-1. PC 端 bridge 生成临时 P-256 密钥对（v1 默认；X25519 可选），显示二维码：`{bridge_url, pair_id, pc_pub, nonce, expires=120s}`。
+1. PC 端 bridge 生成临时 P-256 密钥对（v1 默认；X25519 可选），显示二维码：`{bridge_url, pair_id, pc_pub, nonce, expires_at}`（`expires_at` 为绝对时间，SAS transcript 需要）。
 2. 手机扫码 → 生成自己的 P-256 密钥对 → 双方 ECDH → `K_pair = HKDF(P-256_shared, salt=pair_id, info="phonejob/v1/pair")`。
 3. PC 与手机**各自显示 6 位 SAS 码**（由 `K_pair` 与配对 transcript 派生），用户核对两侧一致后，在 PC 点「确认配对」。
 4. 派生并存储：
@@ -303,6 +306,8 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 | GET | `/api/job/:id/result` | 取加密结果 |
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
+> PWA 独立 origin 时，API 只允许配置的 `PHONEJOB_PWA_ORIGIN` 的 CORS；本地 7789 不设 CORS。
+
 ### 8.2 设备会话令牌
 - 每次连接先 `POST /api/session`：服务端发一次性 nonce，手机用
   `K_auth = HKDF(K_pair, salt=pair_id, info="phonejob/v1/auth")` 计算
@@ -371,6 +376,9 @@ cloudflared tunnel run phonejob
 
 # 4) 安装 DSH 插件
 & '<DSH_INSTALL>\resources\runtime\cli\bin\dsh.cmd' plugin --profile desktop add link:<PHONEJOB_HOME>\plugin
+
+# 5) PWA：独立稳定 origin 托管 pwa/（GitHub Pages / Cloudflare Pages 等）
+#    并在 bridge 环境设置 PHONEJOB_PWA_ORIGIN=<该 origin>
 ```
 
 - 防火墙：只需允许 `cloudflared` 出站；**不开放任何入站端口**。
@@ -449,6 +457,7 @@ cloudflared tunnel run phonejob
 | 问题 | 默认 |
 |---|---|
 | 隧道选型 | 固定 hostname（named tunnel / Tailscale Funnel / 自建）；quick tunnel 仅实验，不能用于密钥/推送 |
+| PWA 托管 | 独立稳定 origin（GitHub Pages / Cloudflare Pages）；bridge 配 `PHONEJOB_PWA_ORIGIN` |
 | 密码子归属 | 电脑首次安装/初始化生成 32B `K_otp`，DPAPI 保存；配对时下发；手机不生成 |
 | 手机 UI 框架 | 原生 JS（无构建链） |
 | 会话归属 | 单独会话「手机任务」，不污染现有会话 |

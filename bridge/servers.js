@@ -51,9 +51,10 @@ function safeEqualText(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
+    ...extraHeaders,
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(payload),
     'Cache-Control': 'no-store',
@@ -119,10 +120,10 @@ function checkOrigin(req, allowed) {
   throw httpError(403, 'forbidden');
 }
 
-function sendError(res, err) {
+function sendError(res, err, extraHeaders = {}) {
   const status = err.status ?? ERROR_STATUS[err.code] ?? 500;
   const code = status === 500 ? 'internal_error' : err.code ?? err.message ?? 'error';
-  sendJson(res, status, { error: code });
+  sendJson(res, status, { error: code }, extraHeaders);
 }
 
 function listen(server, port, host) {
@@ -153,15 +154,28 @@ export function createBridgeServers({
   apiPort = 7788,
   localPort = 7789,
   version = '0.1.0',
+  pwaOrigin = null,
 } = {}) {
   if (!pairing) throw new TypeError('pairing is required');
 
+  const allowedPwaOrigin = pwaOrigin ? new URL(pwaOrigin).origin : null;
   const localTokens = new Map();
   let actualApiPort = apiPort;
   let actualLocalPort = localPort;
 
   const allowedHosts = () => [`127.0.0.1:${actualLocalPort}`, `localhost:${actualLocalPort}`];
   const allowedOrigins = () => [`http://127.0.0.1:${actualLocalPort}`, `http://localhost:${actualLocalPort}`];
+
+  function corsHeaders(req) {
+    if (!allowedPwaOrigin || req.headers.origin !== allowedPwaOrigin) return {};
+    return {
+      'Access-Control-Allow-Origin': allowedPwaOrigin,
+      'Access-Control-Allow-Methods': 'GET, POST',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '600',
+      Vary: 'Origin',
+    };
+  }
 
   function checkAdmin(req) {
     if (!safeEqualText(req.headers['x-phonejob-admin'], adminToken)) {
@@ -178,13 +192,28 @@ export function createBridgeServers({
   const apiServer = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://127.0.0.1');
+      if (req.method === 'OPTIONS') {
+        if (!allowedPwaOrigin || req.headers.origin !== allowedPwaOrigin) {
+          res.writeHead(403);
+          res.end();
+          return;
+        }
+        res.writeHead(204, corsHeaders(req));
+        res.end();
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/health') {
         const devices = pairing.listDevices();
-        sendJson(res, 200, {
-          ok: true,
-          version,
-          paired_devices: devices.filter((device) => !device.revoked).length,
-        });
+        sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            version,
+            paired_devices: devices.filter((device) => !device.revoked).length,
+          },
+          corsHeaders(req),
+        );
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/pair/claim') {
@@ -194,22 +223,30 @@ export function createBridgeServers({
           phonePub: body.phone_pub,
           proof: body.proof,
         });
-        sendJson(res, 200, result);
+        sendJson(res, 200, result, corsHeaders(req));
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/pair/provision') {
         const body = await readJson(req);
-        const envelope = await pairing.provisionOtp({
-          pairId: body.pair_id,
-          deviceId: body.device_id,
-          proof: body.proof,
-        });
-        sendJson(res, 200, envelope);
+        try {
+          const envelope = await pairing.provisionOtp({
+            pairId: body.pair_id,
+            deviceId: body.device_id,
+            proof: body.proof,
+          });
+          sendJson(res, 200, envelope, corsHeaders(req));
+        } catch (err) {
+          if (err.code === 'PAIRING_NOT_CONFIRMED') {
+            sendJson(res, 202, { state: 'waiting' }, { ...corsHeaders(req), 'Retry-After': '1' });
+            return;
+          }
+          throw err;
+        }
         return;
       }
-      sendJson(res, 404, { error: 'not_found' });
+      sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
     } catch (err) {
-      sendError(res, err);
+      sendError(res, err, corsHeaders(req));
     }
   });
 

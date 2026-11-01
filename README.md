@@ -10,7 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页）；PWA、DSH 插件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PWA 配对与 TOTP）；任务通道、DSH 插件未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
@@ -23,15 +23,31 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/local/`：本地配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
-- 测试：`npm test`（Node 24 test runner，无第三方依赖；22 项通过）
-- 下一步：QR/PC 配对首页、PWA、SQLite 持久化、DSH 插件
+- `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP
+- `pwa/store.js`：IndexedDB 保存设备元数据与不可导出 `CryptoKey`
+- `pwa/app.js` / `pwa/index.html`：粘贴配对信息 → 显示 SAS → 等待电脑确认 → 显示 TOTP
+- `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
+- 测试：`npm test`（Node 24 test runner，无第三方依赖；26 项通过）
+- 已验证：Chrome 端到端配对 + TOTP，刷新后从 IndexedDB 继续计算；密钥 `extractable:false` / HMAC SHA-1
+- 下一步：QR/PC 配对首页、Service Worker/Web Push、SQLite 持久化、任务通道、DSH 插件
 
 ```bash
 npm test
 node bridge/key-init.js            # 首次初始化；默认 %DSH_HOME%\phonejob\keys.bin
 node bridge/key-init.js --rotate   # 轮换；旧码失效，需重新下发设备
 node bridge/index.js               # 启动 bridge；API 127.0.0.1:7788，本地 127.0.0.1:7789
+npm run pwa:dev                    # PWA 开发服务器 http://127.0.0.1:8000
 ```
+
+本地联调时让 bridge 允许 PWA origin：
+
+```bash
+PHONEJOB_PWA_ORIGIN=http://127.0.0.1:8000 node bridge/index.js
+```
+
+PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
+
+当前还没有 QR/PC 配对首页；本地联调时从 `%DSH_HOME%\phonejob\admin.token` 读 admin token，向本地 `7789` 的 `/api/pair/start` 发 JSON（`bridge_url` 填 `http://127.0.0.1:7788`），把返回的 `qr` 对象粘贴到 PWA。
 
 `bridge/index.js` 首次启动也会加载/生成 `K_otp`；本地管理 token 写到 `%DSH_HOME%\phonejob\admin.token`，不打印到日志。
 

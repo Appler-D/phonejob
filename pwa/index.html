@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https: http://127.0.0.1:* http://localhost:*; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>PhoneJob</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PhoneJob</h1>
+      <p class="hint">手机 → 自己电脑的加密任务通道</p>
+    </header>
+
+    <section id="pair-panel">
+      <h2>配对</h2>
+      <p class="hint">把电脑上的配对信息粘贴到下面。密码子由电脑生成，手机只负责计算 TOTP。</p>
+      <label for="pair-payload">配对信息</label>
+      <textarea id="pair-payload" rows="7" spellcheck="false" placeholder='{"bridge_url":"https://...","pair_id":"...","pc_pub":"...","nonce":"...","expires_at":...}'></textarea>
+      <button id="pair-button" type="button">开始配对</button>
+      <p id="status" class="status"></p>
+      <p id="error" class="error" role="alert"></p>
+      <div id="sas-section" hidden>
+        <p>手机端 SAS：<strong id="sas" class="sas"></strong></p>
+        <p class="hint">在电脑的确认页输入这个 SAS，并核对两边一致。</p>
+      </div>
+    </section>
+
+    <section id="totp-panel" hidden>
+      <h2>动态密码子</h2>
+      <p id="device-label" class="hint"></p>
+      <p id="totp-code" class="totp"></p>
+      <p class="hint"><span id="totp-remaining">30</span> 秒后刷新</p>
+      <button id="repair-button" type="button" class="secondary">重新配对</button>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

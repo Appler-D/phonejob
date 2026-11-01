@@ -89,6 +89,7 @@ export class PairingService {
         pc_pub: session.pcPub,
         nonce,
         expires: Math.floor(this.pairingTtlMs / 1000),
+        expires_at: session.expiresAt,
       },
     };
   }

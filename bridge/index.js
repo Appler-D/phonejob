@@ -47,6 +47,7 @@ const servers = createBridgeServers({
   apiPort,
   localPort,
   version: VERSION,
+  pwaOrigin: process.env.PHONEJOB_PWA_ORIGIN || null,
 });
 
 try {
