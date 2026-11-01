@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   apply,
   buildPrompt,
+  collectResultFiles,
   extractOutcome,
   nextJob,
   readJob,
@@ -58,6 +59,24 @@ test('plugin claims, stages, prompts, and records a result', async (t) => {
   assert.match(prompt, /PHONEJOB job_test_plugin/);
   assert.match(prompt, /0-note\.txt/);
   assert.match(prompt, /read the attachment/);
+  assert.match(prompt, /out\//);
+
+  await writeFile(path.join(stage, 'out', 'answer.md'), 'the file result');
+  const files = await collectResultFiles(path.join(stage, 'out'), path.join(inbox, 'done', jobId));
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, 'answer.md');
+  assert.equal(files[0].size, Buffer.byteLength('the file result'));
+  assert.equal(
+    await readFile(path.join(inbox, 'done', jobId, 'files', '0'), 'utf8'),
+    'the file result',
+  );
+
+  await writeFile(path.join(stage, 'out', 'bad.exe'), 'nope');
+  await assert.rejects(
+    () => collectResultFiles(path.join(stage, 'out'), path.join(inbox, 'done', jobId)),
+    /unsupported result file/,
+  );
+  await rm(path.join(stage, 'out', 'bad.exe'));
 
   const events = [
     { seq: 1, type: 'turn/start', data: { turn: 1 } },
@@ -87,14 +106,15 @@ test('plugin claims, stages, prompts, and records a result', async (t) => {
   assert.equal(failed.status, 'failed');
   assert.equal(failed.error, 'model failed');
 
-  const result = await writeResult(inbox, jobId, done);
+  const result = await writeResult(inbox, jobId, { ...done, files });
   assert.equal(result.status, 'done');
   assert.equal(validateResult({ job, result }).ok, true);
   const stored = JSON.parse(
     await readFile(path.join(inbox, 'done', jobId, 'result.json'), 'utf8'),
   );
   assert.equal(stored.text, 'the result');
-  assert.equal(stored.files.length, 0);
+  assert.equal(stored.files.length, 1);
+  assert.equal(stored.files[0].name, 'answer.md');
   assert.equal(await nextJob(inbox), null);
 });
 

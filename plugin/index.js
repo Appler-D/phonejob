@@ -3,10 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   access,
   copyFile,
+  lstat,
   mkdir,
   readFile,
   readdir,
   rename,
+  rm,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -16,6 +18,31 @@ const JOB_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const POLL_MS = 5000;
 const JOB_TIMEOUT_MS = 30 * 60_000;
 const CANCEL_SETTLE_MS = 30_000;
+const MAX_RESULT_FILES = 10;
+const MAX_RESULT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_RESULT_TOTAL_BYTES = 20 * 1024 * 1024;
+const RESULT_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.pdf',
+  '.docx',
+  '.xlsx',
+  '.pptx',
+  '.txt',
+  '.md',
+  '.csv',
+  '.json',
+  '.zip',
+]);
+const RESERVED_NAMES = new Set([
+  'CON',
+  'PRN',
+  'AUX',
+  'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+]);
 
 export const name = 'phonejob-plugin';
 export const inject = ['agents', 'agentDefaultModel', 'sessions'];
@@ -83,8 +110,9 @@ export async function readJob(jobDir) {
 
 export async function stageFiles(job, jobDir, workspace) {
   const stage = path.join(workspace, '.phonejob', job.job_id);
-  if (job.files.length === 0) return stage;
-  await mkdir(stage, { recursive: true });
+  const outDir = path.join(stage, 'out');
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
   for (const file of job.files) {
     if (typeof file.local_path !== 'string') throw new Error('invalid file entry');
     const source = path.join(jobDir, file.local_path);
@@ -92,6 +120,55 @@ export async function stageFiles(job, jobDir, workspace) {
     await copyFile(source, target);
   }
   return stage;
+}
+
+function safeResultName(value) {
+  if (typeof value !== 'string' || !value) return null;
+  if (path.basename(value) !== value) return null;
+  if (/[\u0000-\u001f<>:"/\\|?*]/.test(value) || /[. ]$/.test(value)) return null;
+  if (value.length > 100) return null;
+  if (RESERVED_NAMES.has(value.split('.')[0].toUpperCase())) return null;
+  if (!RESULT_EXTENSIONS.has(path.extname(value).toLowerCase())) return null;
+  return value;
+}
+
+export async function collectResultFiles(outDir, doneDir) {
+  let entries;
+  try {
+    entries = await readdir(outDir);
+  } catch {
+    return [];
+  }
+  const names = [];
+  for (const entry of entries) {
+    const info = await lstat(path.join(outDir, entry));
+    if (info.isFile()) names.push(entry);
+  }
+  names.sort();
+  if (names.length > MAX_RESULT_FILES) throw new Error('too many result files');
+
+  const targetDir = path.join(doneDir, 'files');
+  await rm(targetDir, { recursive: true, force: true });
+  const files = [];
+  const seen = new Set();
+  let total = 0;
+  for (let index = 0; index < names.length; index += 1) {
+    const name = safeResultName(names[index]);
+    if (!name) throw new Error(`unsupported result file: ${names[index]}`);
+    if (seen.has(name)) throw new Error('duplicate result file name');
+    seen.add(name);
+    const bytes = await readFile(path.join(outDir, names[index]));
+    if (bytes.length === 0 || bytes.length > MAX_RESULT_FILE_BYTES) {
+      throw new Error(`invalid result file size: ${name}`);
+    }
+    total += bytes.length;
+    if (total > MAX_RESULT_TOTAL_BYTES) throw new Error('result files are too large');
+    const sha256 = createHash('sha256').update(bytes).digest('base64url');
+    await mkdir(targetDir, { recursive: true });
+    await writeFile(path.join(targetDir, String(index)), bytes);
+    files.push({ name, size: bytes.length, sha256 });
+  }
+  return files;
 }
 
 export function buildPrompt(job, stageDir) {
@@ -111,6 +188,9 @@ export function buildPrompt(job, stageDir) {
     '',
     '附件（只读，勿执行）：',
     files || '(无)',
+    '',
+    '返回文件（可选）：',
+    `把最终产物写入 ${path.join(stageDir, 'out')}/（最多 ${MAX_RESULT_FILES} 个，单个 ≤10MB，总计 ≤20MB；只放结果文件）`,
     '',
     '约束：',
     '- 只在目标工作区内操作。',
@@ -152,7 +232,7 @@ export function extractOutcome(events, fromSeq) {
   return { status: failure ? 'failed' : 'done', text, error: failure };
 }
 
-export async function writeResult(inbox, jobId, { status, text, error }) {
+export async function writeResult(inbox, jobId, { status, text, error, files = [] }) {
   const dir = path.join(inbox, 'done', jobId);
   await mkdir(dir, { recursive: true });
   const result = {
@@ -160,7 +240,7 @@ export async function writeResult(inbox, jobId, { status, text, error }) {
     status,
     finished_at: new Date().toISOString(),
     text: String(text ?? ''),
-    files: [],
+    files,
     error: error ?? null,
   };
   const temp = path.join(dir, `.result.${process.pid}.${Date.now()}.tmp`);
@@ -302,7 +382,11 @@ export function apply(ctx, config = {}) {
         const sessions = ctx.get('sessions');
         if (sessions?.flush) await sessions.flush(agent.session);
         const outcome = extractOutcome(agent.session.events, fromSeq);
-        await writeResult(inbox, next.id, outcome);
+        const files =
+          outcome.status === 'done'
+            ? await collectResultFiles(path.join(stage, 'out'), path.join(inbox, 'done', next.id))
+            : [];
+        await writeResult(inbox, next.id, { ...outcome, files });
       } catch (err) {
         if (err?.code === 'JOB_TIMEOUT') {
           let settleTimer;

@@ -10,7 +10,7 @@ import {
   sealEnvelope,
 } from './crypto.js';
 import { computeConfirmationResponse, responsesEqual } from './confirm.js';
-import { validateResult } from './result.js';
+import { scanResultBytes, validateResult } from './result.js';
 import { verifyTotp } from './totp.js';
 
 const JOB_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
@@ -324,7 +324,7 @@ export class JobService {
     return { job_id, state: 'WAITING_CONFIRM', risk };
   }
 
-  async #verifyDevice({ jobId, deviceId, ts, proof, type }) {
+  async #verifyDevice({ jobId, deviceId, ts, proof, type, fileIndex }) {
     if (typeof jobId !== 'string' || !JOB_ID_RE.test(jobId)) throw jobError('JOB_NOT_FOUND');
     if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
       throw jobError('JOB_DEVICE_REJECTED');
@@ -334,7 +334,13 @@ export class JobService {
     }
     const device = await this.deviceStore.getDevice(deviceId);
     if (!device || device.revoked) throw jobError('JOB_DEVICE_REJECTED');
-    const message = canonicalJson({ type, device_id: deviceId, job_id: jobId, ts });
+    const message = canonicalJson({
+      type,
+      device_id: deviceId,
+      job_id: jobId,
+      ts,
+      ...(fileIndex === undefined ? {} : { file_index: fileIndex }),
+    });
     const expected = await hmacSha256Base64Url(device.keys.kAuth, message);
     if (!safeEqualBase64(proof, expected)) throw jobError('JOB_STATUS_AUTH');
     return device;
@@ -465,6 +471,33 @@ export class JobService {
     return { job_id: jobId, state: 'WAITING_CONFIRM', challenge };
   }
 
+  async #verifyResultFile(jobId, result, index, forbidden, secret) {
+    const file = result.files[index];
+    if (!file) return { ok: false, error: 'result file missing' };
+    let bytes;
+    try {
+      bytes = await readFile(path.join(this.inboxDir, 'done', jobId, 'files', String(index)));
+    } catch {
+      return { ok: false, error: 'result file missing' };
+    }
+    if (bytes.length !== file.size) return { ok: false, error: 'result file size mismatch' };
+    if (createHash('sha256').update(bytes).digest('base64url') !== file.sha256) {
+      return { ok: false, error: 'result file hash mismatch' };
+    }
+    if (bytes.includes(secret)) return { ok: false, error: 'result file blocked: key material' };
+    const scan = scanResultBytes(bytes, forbidden);
+    if (!scan.ok) return scan;
+    return { ok: true, bytes };
+  }
+
+  async #verifyResultFiles(jobId, result, forbidden, secret) {
+    for (let index = 0; index < result.files.length; index += 1) {
+      const check = await this.#verifyResultFile(jobId, result, index, forbidden, secret);
+      if (!check.ok) return check;
+    }
+    return { ok: true };
+  }
+
   async scanResults() {
     if (this.scanning) return [];
     this.scanning = true;
@@ -490,11 +523,11 @@ export class JobService {
           continue;
         }
         const { secret } = await this.loadOtp();
-        const check = validateResult({
-          job,
-          result,
-          forbidden: [secret.toString('base64'), secret.toString('hex')],
-        });
+        const forbidden = [secret.toString('base64'), secret.toString('hex')];
+        let check = validateResult({ job, result, forbidden });
+        if (check.ok) {
+          check = await this.#verifyResultFiles(jobId, result, forbidden, secret);
+        }
         const finishedAt = this.now();
         if (!check.ok) {
           await this.jobStore.completeJob({
@@ -621,6 +654,53 @@ export class JobService {
       device.keys.kEnc,
       { v: 1, type: 'job-result-v1', job_id: jobId, device_id: deviceId },
       JSON.stringify(result),
+    );
+  }
+
+  async getResultFileForDevice({ jobId, fileIndex, deviceId, ts, proof }) {
+    const device = await this.#verifyDevice({
+      jobId,
+      deviceId,
+      ts,
+      proof,
+      type: 'job-result-file-v1',
+      fileIndex,
+    });
+    if (!Number.isInteger(fileIndex) || fileIndex < 0) {
+      throw jobError('JOB_RESULT_FILE_NOT_FOUND');
+    }
+    const job = await this.jobStore.getJob(jobId);
+    if (!job || job.device_id !== deviceId) throw jobError('JOB_NOT_FOUND');
+    if (job.state !== 'DONE') throw jobError('JOB_RESULT_NOT_READY');
+    if (job.result_error) throw jobError('JOB_RESULT_BLOCKED');
+    let result;
+    try {
+      result = JSON.parse(
+        await readFile(path.join(this.inboxDir, 'done', jobId, 'result.json'), 'utf8'),
+      );
+    } catch {
+      throw jobError('JOB_RESULT_FILE_NOT_FOUND');
+    }
+    const { secret } = await this.loadOtp();
+    const forbidden = [secret.toString('base64'), secret.toString('hex')];
+    const check = validateResult({ job, result, forbidden });
+    if (!check.ok) throw jobError('JOB_RESULT_BLOCKED');
+    const file = result.files[fileIndex];
+    if (!file) throw jobError('JOB_RESULT_FILE_NOT_FOUND');
+    const verified = await this.#verifyResultFile(jobId, result, fileIndex, forbidden, secret);
+    if (!verified.ok) throw jobError('JOB_RESULT_BLOCKED');
+    return sealEnvelope(
+      device.keys.kEnc,
+      {
+        v: 1,
+        type: 'job-result-file-v1',
+        job_id: jobId,
+        device_id: deviceId,
+        file_index: fileIndex,
+        sha256: file.sha256,
+        size: file.size,
+      },
+      verified.bytes,
     );
   }
 

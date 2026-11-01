@@ -56,6 +56,7 @@ const jobChallengeEl = document.getElementById('job-challenge');
 const jobResponseEl = document.getElementById('job-response');
 const jobStateEl = document.getElementById('job-state');
 const jobResultEl = document.getElementById('job-result');
+const jobResultFilesEl = document.getElementById('job-result-files');
 
 const CHUNK_SIZE = 512 * 1024;
 
@@ -118,6 +119,8 @@ function hideJobWatch() {
   jobStateEl.textContent = '';
   jobResultEl.hidden = true;
   jobResultEl.textContent = '';
+  jobResultFilesEl.hidden = true;
+  jobResultFilesEl.replaceChildren();
 }
 
 async function renderTotp() {
@@ -385,11 +388,100 @@ async function fetchJobResult(jobId) {
   return JSON.parse(new TextDecoder().decode(opened.plaintext));
 }
 
+async function fetchJobResultFile(jobId, fileIndex) {
+  const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+  if (!deviceKeys) throw new Error('设备密钥缺失，请重新配对');
+  const ts = Math.floor(Date.now() / 1000);
+  const proof = toBase64Url(
+    await hmacWithKey(
+      deviceKeys.auth,
+      canonicalJson({
+        type: 'job-result-file-v1',
+        device_id: currentDevice.device_id,
+        job_id: jobId,
+        ts,
+        file_index: fileIndex,
+      }),
+    ),
+  );
+  const response = await fetch(
+    `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/result/file/${fileIndex}`,
+    {
+      headers: {
+        'X-PhoneJob-Device': currentDevice.device_id,
+        'X-PhoneJob-Ts': String(ts),
+        'X-PhoneJob-Proof': proof,
+      },
+    },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+  const opened = await openEnvelope(deviceKeys.enc, body);
+  const header = opened.header;
+  if (
+    header.type !== 'job-result-file-v1' ||
+    header.job_id !== jobId ||
+    header.device_id !== currentDevice.device_id ||
+    header.file_index !== fileIndex
+  ) {
+    throw new Error('结果文件信封不匹配');
+  }
+  return { bytes: opened.plaintext, header };
+}
+
+function saveResultFile(bytes, name) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  anchor.rel = 'noopener';
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+function renderResultFiles(jobId, files) {
+  jobResultFilesEl.replaceChildren();
+  if (!Array.isArray(files) || files.length === 0) {
+    jobResultFilesEl.hidden = true;
+    return;
+  }
+  jobResultFilesEl.hidden = false;
+  files.forEach((file, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary';
+    button.textContent = `下载 ${file.name} (${formatBytes(file.size)})`;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const { bytes, header } = await fetchJobResultFile(jobId, index);
+        const digest = toBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+        if (
+          bytes.length !== file.size ||
+          digest !== file.sha256 ||
+          header.sha256 !== file.sha256 ||
+          header.size !== file.size
+        ) {
+          throw new Error('结果文件校验失败');
+        }
+        saveResultFile(bytes, file.name);
+      } catch (err) {
+        jobStateEl.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    jobResultFilesEl.append(button);
+  });
+}
+
 async function watchJob(jobId) {
   stopJobWatch();
   jobWatch.hidden = false;
   jobResultEl.hidden = true;
   jobResultEl.textContent = '';
+  jobResultFilesEl.hidden = true;
+  jobResultFilesEl.replaceChildren();
   jobStateEl.textContent = '等待电脑确认…';
   const tick = async () => {
     try {
@@ -430,6 +522,7 @@ async function watchJob(jobId) {
           const result = await fetchJobResult(jobId);
           jobResultEl.textContent = result.text || result.error || '(空结果)';
           jobResultEl.hidden = false;
+          renderResultFiles(jobId, result.files);
         } catch (err) {
           jobResultEl.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
           jobResultEl.hidden = false;

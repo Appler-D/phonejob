@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -319,7 +320,10 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   assert.equal(parse(statusAfter).state, 'QUEUED');
 
   const resultDir = path.join(inboxDir, 'done', jobId);
-  await mkdir(resultDir, { recursive: true });
+  await mkdir(path.join(resultDir, 'files'), { recursive: true });
+  const resultFileBytes = Buffer.from('the answer as a file');
+  const resultFileSha = createHash('sha256').update(resultFileBytes).digest('base64url');
+  await writeFile(path.join(resultDir, 'files', '0'), resultFileBytes);
   await writeFile(
     path.join(resultDir, 'result.json'),
     JSON.stringify({
@@ -327,7 +331,7 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
       status: 'done',
       finished_at: new Date().toISOString(),
       text: 'the answer',
-      files: [],
+      files: [{ name: 'answer.md', size: resultFileBytes.length, sha256: resultFileSha }],
       error: null,
     }),
   );
@@ -366,6 +370,43 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   const openedResult = await openEnvelope(phone.keys.kEnc, parse(resultResponse));
   const resultBody = JSON.parse(Buffer.from(openedResult.plaintext).toString('utf8'));
   assert.equal(resultBody.text, 'the answer');
+  assert.equal(resultBody.files.length, 1);
+  assert.equal(resultBody.files[0].name, 'answer.md');
+
+  const fileTs = Math.floor(Date.now() / 1000);
+  const fileProof = await hmacSha256Base64Url(
+    phone.keys.kAuth,
+    canonicalJson({
+      type: 'job-result-file-v1',
+      device_id: phone.claim.device_id,
+      job_id: jobId,
+      ts: fileTs,
+      file_index: 0,
+    }),
+  );
+  const fileResponse = await request(api, `/api/job/${jobId}/result/file/0`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(fileTs),
+      'X-PhoneJob-Proof': fileProof,
+    },
+  });
+  assert.equal(fileResponse.status, 200, fileResponse.body);
+  const openedFile = await openEnvelope(phone.keys.kEnc, parse(fileResponse));
+  assert.equal(openedFile.header.type, 'job-result-file-v1');
+  assert.equal(openedFile.header.file_index, 0);
+  assert.equal(openedFile.header.sha256, resultFileSha);
+  assert.equal(Buffer.from(openedFile.plaintext).equals(resultFileBytes), true);
+
+  const swappedFile = await request(api, `/api/job/${jobId}/result/file/1`, {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(fileTs),
+      'X-PhoneJob-Proof': fileProof,
+    },
+  });
+  assert.equal(swappedFile.status, 401);
+  assert.equal(parse(swappedFile).error, 'JOB_STATUS_AUTH');
   const jobListDone = await request(local, '/api/jobs', {
     headers: { 'X-PhoneJob-Admin': 'test-admin' },
   });

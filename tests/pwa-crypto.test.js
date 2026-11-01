@@ -166,6 +166,22 @@ test('PWA opens a result envelope sealed by the bridge', async () => {
   await assert.rejects(() =>
     pwa.openEnvelope(aesKey, { ...sealed, job_id: 'job_other_1' }),
   );
+
+  const fileBytes = new Uint8Array([0, 1, 2, 3, 255, 254]);
+  const fileHeader = {
+    v: 1,
+    type: 'job-result-file-v1',
+    job_id: 'job_test_result',
+    device_id: 'dev_test_device_1',
+    file_index: 0,
+    sha256: 'A'.repeat(43),
+    size: fileBytes.length,
+  };
+  const sealedFile = await bridge.sealEnvelope(pcKeys.kEnc, fileHeader, fileBytes);
+  const openedFile = await pwa.openEnvelope(aesKey, sealedFile);
+  assert.deepEqual(Array.from(openedFile.plaintext), Array.from(fileBytes));
+  assert.equal(openedFile.header.type, 'job-result-file-v1');
+  assert.equal(openedFile.header.file_index, 0);
 });
 
 test('PWA confirmation response and status proof match the bridge', async () => {

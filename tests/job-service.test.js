@@ -80,6 +80,17 @@ async function writeResult(inbox, jobId, overrides = {}) {
   return result;
 }
 
+async function writeResultFile(inbox, jobId, index, bytes, name = `answer-${index}.md`) {
+  const dir = path.join(inbox, 'done', jobId, 'files');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, String(index)), bytes);
+  return {
+    name,
+    size: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('base64url'),
+  };
+}
+
 async function makeEnvelope({
   secret,
   workspace,
@@ -715,4 +726,151 @@ test('execution timeout fails a queued job and ignores a late result', async (t)
   await writeResult(f.inbox, jobId, { text: 'too late' });
   assert.deepEqual(await f.service.scanResults(), []);
   assert.equal((await f.service.getJob(jobId)).state, 'FAILED');
+});
+
+test('result files are verified and sealed with an index-bound proof', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_result_file';
+  const envelope = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId,
+    seq: 1,
+  });
+  await f.service.submit(envelope);
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+
+  const content = Buffer.from('the result file bytes');
+  const meta = await writeResultFile(f.inbox, jobId, 0, content);
+  await writeResult(f.inbox, jobId, { text: 'with file', files: [meta] });
+  const completed = await f.service.scanResults();
+  assert.equal(completed[0].state, 'DONE');
+
+  const ts = Math.floor(now / 1000);
+  const resultProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-result-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const resultEnvelope = await f.service.getResultForDevice({
+    jobId,
+    deviceId: DEVICE_ID,
+    ts,
+    proof: resultProof,
+  });
+  const openedResult = await openEnvelope(KEYS.kEnc, resultEnvelope);
+  const result = JSON.parse(Buffer.from(openedResult.plaintext).toString('utf8'));
+  assert.equal(result.files.length, 1);
+  assert.equal(result.files[0].name, meta.name);
+
+  const fileProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({
+      type: 'job-result-file-v1',
+      device_id: DEVICE_ID,
+      job_id: jobId,
+      ts,
+      file_index: 0,
+    }),
+  );
+  const sealed = await f.service.getResultFileForDevice({
+    jobId,
+    fileIndex: 0,
+    deviceId: DEVICE_ID,
+    ts,
+    proof: fileProof,
+  });
+  const openedFile = await openEnvelope(KEYS.kEnc, sealed);
+  assert.equal(openedFile.header.type, 'job-result-file-v1');
+  assert.equal(openedFile.header.job_id, jobId);
+  assert.equal(openedFile.header.file_index, 0);
+  assert.equal(openedFile.header.sha256, meta.sha256);
+  assert.equal(Buffer.from(openedFile.plaintext).equals(content), true);
+
+  await assert.rejects(
+    () =>
+      f.service.getResultFileForDevice({
+        jobId,
+        fileIndex: 1,
+        deviceId: DEVICE_ID,
+        ts,
+        proof: fileProof,
+      }),
+    (err) => err.code === 'JOB_STATUS_AUTH',
+  );
+
+  await writeFile(path.join(f.inbox, 'done', jobId, 'files', '0'), Buffer.from('tampered'));
+  await assert.rejects(
+    () =>
+      f.service.getResultFileForDevice({
+        jobId,
+        fileIndex: 0,
+        deviceId: DEVICE_ID,
+        ts,
+        proof: fileProof,
+      }),
+    (err) => err.code === 'JOB_RESULT_BLOCKED',
+  );
+});
+
+test('scanResults rejects result files with bad hashes or secrets', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+
+  const badHashJob = 'job_test_bad_result_file';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: badHashJob,
+      seq: 1,
+    }),
+  );
+  const badHash = await f.service.getJob(badHashJob);
+  await f.service.approveJob({
+    jobId: badHashJob,
+    response: computeConfirmationResponse(KEYS.kConfirm, badHash.job_hash, badHash.challenge),
+  });
+  const badMeta = await writeResultFile(f.inbox, badHashJob, 0, Buffer.from('good bytes'));
+  await writeResult(f.inbox, badHashJob, {
+    files: [{ ...badMeta, sha256: 'B'.repeat(43) }],
+  });
+
+  const secretJob = 'job_test_secret_result';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: secretJob,
+      seq: 2,
+    }),
+  );
+  const secret = await f.service.getJob(secretJob);
+  await f.service.approveJob({
+    jobId: secretJob,
+    response: computeConfirmationResponse(KEYS.kConfirm, secret.job_hash, secret.challenge),
+  });
+  const secretMeta = await writeResultFile(
+    f.inbox,
+    secretJob,
+    0,
+    Buffer.from(`leak sk-${'A'.repeat(24)}`),
+  );
+  await writeResult(f.inbox, secretJob, { files: [secretMeta] });
+
+  const completed = await f.service.scanResults();
+  assert.equal(completed.length, 2);
+  const badHashState = await f.service.getJob(badHashJob);
+  assert.equal(badHashState.state, 'FAILED');
+  assert.match(badHashState.result_error, /hash/);
+  const secretState = await f.service.getJob(secretJob);
+  assert.equal(secretState.state, 'FAILED');
+  assert.match(secretState.result_error, /secret/);
 });

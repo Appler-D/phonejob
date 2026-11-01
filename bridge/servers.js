@@ -45,6 +45,7 @@ const ERROR_STATUS = {
   JOB_MOVE_FAILED: 500,
   JOB_RESULT_NOT_READY: 409,
   JOB_RESULT_BLOCKED: 409,
+  JOB_RESULT_FILE_NOT_FOUND: 404,
   JOB_FILES_INVALID: 400,
   JOB_FILE_NAME: 400,
   JOB_FILE_TYPE: 400,
@@ -337,6 +338,24 @@ export function createBridgeServers({
         }
         const result = await jobs.getResultForDevice({
           jobId: jobResult[1],
+          deviceId: req.headers['x-phonejob-device'],
+          ts: Number(req.headers['x-phonejob-ts']),
+          proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
+        return;
+      }
+      const jobResultFile = url.pathname.match(
+        /^\/api\/job\/([A-Za-z0-9_-]{8,64})\/result\/file\/(\d+)$/,
+      );
+      if (req.method === 'GET' && jobResultFile) {
+        if (!jobs) {
+          sendJson(res, 404, { error: 'not_found' }, corsHeaders(req));
+          return;
+        }
+        const result = await jobs.getResultFileForDevice({
+          jobId: jobResultFile[1],
+          fileIndex: Number(jobResultFile[2]),
           deviceId: req.headers['x-phonejob-device'],
           ts: Number(req.headers['x-phonejob-ts']),
           proof: req.headers['x-phonejob-proof'],
