@@ -130,7 +130,7 @@
   - 通过 `ctx.agents` 按 workspace 复用专用会话，`agent.followup` 追加任务消息并 `whenIdle` 等待
   - 自动把该轮最后一条 assistant 文本写成 `done/<id>/result.json`；不需要额外的 `phone_job_reply` 工具
 - 未实现：`phone_job_list/read/claim/reply` 工具（由自动收集替代）、结果文件回传、30 分钟执行超时。
-- 桌面实机执行待验证（本机 npx CLI 与桌面版凭据格式不一致，见 README）。
+- 隔离 DSH 已实机验证加载/认领/会话/失败结果回写；桌面真实模型回复待验证（本机 npx CLI 与桌面版凭据格式不一致，见 README）。
 
 ### 4.6 结果回传
 - 当前实现只支持 ≤200KB 文本结果；`result.files` 非空视为失败，文件结果下一阶段。
@@ -354,7 +354,7 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
    ```
 3. `agent.followup` + `whenIdle` 等待该轮结束。
 4. 自动提取最后一条 assistant 文本，写 `done/<id>/result.json`；bridge 扫描并加密回传。
-5. 未实现 30 分钟执行超时；桌面实机执行待验证。
+5. 未实现 30 分钟执行超时；隔离 DSH 已验证执行/失败回写，桌面真实模型回复待验证。
 
 ---
 
@@ -480,10 +480,10 @@ cloudflared tunnel run phonejob
 | 结果文件 | `result.files` 非空视为失败，下一阶段 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
-| DSH 插件 | 已实现认领/会话唤醒/最终回复回写；桌面实机任务执行待验证 |
+| DSH 插件 | 已实现认领/会话唤醒/最终回复回写；隔离 DSH 已验，桌面真实模型回复待验证 |
 | 确认超时 | 尚未自动拒绝；P2 后续补 |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.8 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PC 配对首页/QR；job 校验；PWA 任务 + 附件分片；电脑审批；结果加密回传；DSH 插件认领/会话唤醒/结果回写；其余评审项待定*
+*版本 v1.9 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果加密回传；DSH 插件隔离实机验证；其余评审项待定*

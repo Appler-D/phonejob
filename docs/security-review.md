@@ -358,6 +358,6 @@ TOTP 对服务端时间校验。`K_otp` 由电脑生成、DPAPI 保存、配对�
 
 *修订：2026-11-01 — `K_otp` 改为电脑生成并下发；P0-4(d) 关闭。*
 
-*进度：2026-11-01 — 电脑端 `K_otp`、DPAPI、TOTP、P-256 配对、SAS、信封、`K_otp` 下发、配对服务、API/本地双端口、本地确认页、PC 配对首页/QR、SQLite 设备/job、PWA 配对/TOTP/任务与附件/挑战响应/结果展示、服务端 job 校验/分片上传/pending 落盘、挑战码/审批/approved、结果扫描/加密回传、DSH 插件认领/会话唤醒/最终回复回写已实现（55 项测试通过；Chrome 端到端 600KB 附件上传+审批+结果、PC 首页与 job 重启持久化已验证；DSH 临时 profile 已组合出插件行，实机启动被本机版本/凭据格式阻塞）；结果文件、zip 内容扫描、确认超时/执行超时、Service Worker/Web Push、DSH 桌面实机执行、iOS Safari 待测。*
+*进度：2026-11-01 — 电脑端 `K_otp`、DPAPI、TOTP、P-256 配对、SAS、信封、`K_otp` 下发、配对服务、API/本地双端口、本地确认页、PC 配对首页/QR、SQLite 设备/job、PWA 配对/TOTP/任务与附件/挑战响应/结果展示、服务端 job 校验/分片上传/pending 落盘、挑战码/审批/approved、结果扫描/加密回传、DSH 插件认领/会话唤醒/最终回复回写已实现（55 项测试通过；Chrome 端到端 600KB 附件上传+审批+结果、PC 首页与 job 重启持久化、隔离 DSH 的插件加载/认领/会话/失败结果回写已验证）；结果文件、zip 内容扫描、确认超时/执行超时、Service Worker/Web Push、DSH 桌面真实模型回复、iOS Safari 待测。*
 
 *本评审基于本机环境与公开文档，不构成法律或安全认证意见；实现前建议按第 5 节逐项 spike。*
