@@ -39,6 +39,18 @@ const confirmTtlMs = envDuration('PHONEJOB_CONFIRM_TTL_MS', 10 * 60_000);
 const uploadTtlMs = envDuration('PHONEJOB_UPLOAD_TTL_MS', 30 * 60_000);
 const executionTtlMs = envDuration('PHONEJOB_EXECUTION_TTL_MS', 35 * 60_000);
 
+function envPositiveInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+const maxJobsPerHour = envPositiveInt('PHONEJOB_MAX_JOBS_PER_HOUR', 10);
+
 if (!Number.isInteger(apiPort) || apiPort < 0 || apiPort > 65535) {
   throw new Error('PHONEJOB_API_PORT must be an integer between 0 and 65535');
 }
@@ -79,6 +91,7 @@ const jobs = new JobService({
   confirmTtlMs,
   uploadTtlMs,
   executionTtlMs,
+  maxJobsPerHour,
   audit,
 });
 const servers = createBridgeServers({

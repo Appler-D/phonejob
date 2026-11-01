@@ -34,6 +34,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    maxJobsPerHour,
     audit,
   } = {},
 ) {
@@ -62,6 +63,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    maxJobsPerHour,
     audit,
   });
   return { service, jobStore, deviceStore, inbox, workspace, otpSecret };
@@ -1024,4 +1026,96 @@ test('zip uploads are scanned before they reach pending', async (t) => {
     proof: safeProof,
   });
   assert.equal(uploaded.state, 'WAITING_CONFIRM');
+});
+
+test('per-device submission rate limit resets after the window', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current, maxJobsPerHour: 1 });
+
+  const first = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_rate_1',
+    seq: 1,
+  });
+  assert.equal((await f.service.submit(first)).state, 'WAITING_CONFIRM');
+
+  const second = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_rate_2',
+    seq: 2,
+  });
+  await assert.rejects(
+    () => f.service.submit(second),
+    (err) => err.code === 'JOB_RATE_LIMITED',
+  );
+  assert.equal((await f.service.listJobs()).length, 1);
+
+  current = now + 60 * 60_000 + 1;
+  const third = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now: current,
+    jobId: 'job_test_rate_3',
+    seq: 2,
+  });
+  assert.equal((await f.service.submit(third)).state, 'WAITING_CONFIRM');
+});
+
+test('repeated OTP failures lock the device until the window passes', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current });
+  const valid = totp(f.otpSecret, now);
+  const wrong = valid === '000000' ? '111111' : '000000';
+
+  for (let index = 0; index < 3; index += 1) {
+    const envelope = await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: `job_test_lock_${index}`,
+      seq: 1,
+      otpValue: wrong,
+    });
+    await assert.rejects(
+      () => f.service.submit(envelope),
+      (err) => err.code === 'JOB_OTP_INVALID',
+    );
+  }
+
+  const locked = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_lock_ok',
+    seq: 1,
+  });
+  await assert.rejects(
+    () => f.service.submit(locked),
+    (err) => err.code === 'JOB_LOCKED',
+  );
+
+  current = now + 5 * 60_000 + 1;
+  const unlocked = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now: current,
+    jobId: 'job_test_lock_ok',
+    seq: 1,
+  });
+  assert.equal((await f.service.submit(unlocked)).state, 'WAITING_CONFIRM');
+
+  const next = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now: current,
+    jobId: 'job_test_lock_next',
+    seq: 2,
+  });
+  assert.equal((await f.service.submit(next)).state, 'WAITING_CONFIRM');
 });

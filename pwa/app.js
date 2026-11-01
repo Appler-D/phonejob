@@ -676,7 +676,17 @@ async function sendJob() {
     }
     watchJob(body.job_id);
   } catch (err) {
-    setJobError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
+    setJobError(
+      err instanceof TypeError
+        ? '无法连接 bridge（检查隧道、CORS 或网络）'
+        : err.message === 'JOB_RATE_LIMITED'
+          ? '提交过于频繁，请稍后再试'
+          : err.message === 'JOB_LOCKED'
+            ? '动态密码子错误次数过多，请稍后再试'
+            : err.message === 'JOB_OTP_INVALID'
+              ? '动态密码子不正确'
+              : err.message,
+    );
   } finally {
     jobSend.disabled = false;
   }

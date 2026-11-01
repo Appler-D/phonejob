@@ -31,6 +31,12 @@ const CHUNK_SIZE = 512 * 1024;
 const DEFAULT_CONFIRM_TTL_MS = 10 * 60_000;
 const DEFAULT_UPLOAD_TTL_MS = 30 * 60_000;
 const DEFAULT_EXECUTION_TTL_MS = 35 * 60_000;
+const DEFAULT_MAX_JOBS_PER_HOUR = 10;
+const RATE_WINDOW_MS = 60 * 60_000;
+const FAILURE_WINDOW_MS = 60 * 60_000;
+const FAILURE_LOCK_MS = 5 * 60_000;
+const FAILURE_HARD_LIMIT = 10;
+const FAILURE_HARD_LOCK_MS = 60 * 60_000;
 const ALLOWED_EXTENSIONS = new Set([
   '.jpg',
   '.jpeg',
@@ -128,6 +134,7 @@ export class JobService {
     confirmTtlMs = DEFAULT_CONFIRM_TTL_MS,
     uploadTtlMs = DEFAULT_UPLOAD_TTL_MS,
     executionTtlMs = DEFAULT_EXECUTION_TTL_MS,
+    maxJobsPerHour = DEFAULT_MAX_JOBS_PER_HOUR,
     audit = null,
   } = {}) {
     if (!deviceStore || !jobStore || typeof loadOtp !== 'function' || !inboxDir) {
@@ -142,7 +149,9 @@ export class JobService {
     this.confirmTtlMs = confirmTtlMs;
     this.uploadTtlMs = uploadTtlMs;
     this.executionTtlMs = executionTtlMs;
+    this.maxJobsPerHour = maxJobsPerHour;
     this.audit = audit;
+    this.authFailures = new Map();
     this.scanning = false;
     this.timeoutScanning = false;
   }
@@ -156,6 +165,35 @@ export class JobService {
       intent: job?.intent,
       ...extra,
     });
+  }
+
+  #checkDeviceLock(deviceId) {
+    const failure = this.authFailures.get(deviceId);
+    if (failure && failure.lockedUntil > this.now()) throw jobError('JOB_LOCKED');
+  }
+
+  #recordAuthFailure(deviceId) {
+    const now = this.now();
+    let failure = this.authFailures.get(deviceId);
+    if (!failure || now - failure.windowStartedAt >= FAILURE_WINDOW_MS) {
+      failure = { count: 0, windowStartedAt: now, lockedUntil: 0 };
+    }
+    failure.count += 1;
+    if (failure.count >= FAILURE_HARD_LIMIT) {
+      failure.lockedUntil = now + FAILURE_HARD_LOCK_MS;
+    } else if (failure.count >= 3) {
+      failure.lockedUntil = now + FAILURE_LOCK_MS;
+    }
+    this.authFailures.set(deviceId, failure);
+    this.audit?.record('auth.failure', {
+      device_id: deviceId,
+      error: 'JOB_OTP_INVALID',
+      reason: failure.count >= FAILURE_HARD_LIMIT ? 'otp_lock_1h' : 'otp_attempt',
+    });
+  }
+
+  #clearAuthFailures(deviceId) {
+    this.authFailures.delete(deviceId);
   }
 
   async submit(envelope) {
@@ -189,8 +227,20 @@ export class JobService {
       return { job_id: existing.job_id, state: existing.state, risk: existing.risk };
     }
 
+    this.#checkDeviceLock(device_id);
     const { secret } = await this.loadOtp();
-    if (!verifyTotp(secret, otp, now, { window: 1 })) throw jobError('JOB_OTP_INVALID');
+    if (!verifyTotp(secret, otp, now, { window: 1 })) {
+      this.#recordAuthFailure(device_id);
+      throw jobError('JOB_OTP_INVALID');
+    }
+    this.#clearAuthFailures(device_id);
+    if (
+      (await this.jobStore.countJobsSince(device_id, now - RATE_WINDOW_MS)) >=
+      this.maxJobsPerHour
+    ) {
+      this.#audit('job.rate_limited', { job_id, device_id }, { error: 'JOB_RATE_LIMITED' });
+      throw jobError('JOB_RATE_LIMITED');
+    }
 
     let job;
     try {

@@ -118,3 +118,23 @@ test('expireJob only transitions allowed states and persists', async (t) => {
   assert.equal(persisted.inbox_path, 'C:\\inbox\\expired');
   await reopened.close();
 });
+
+test('countJobsSince filters by device and time', async (t) => {
+  const memory = new MemoryJobStore();
+  await memory.saveJobWithSequence({ job: job('job_test_count_1', 100), seq: 1, nonce: 'n1' });
+  await memory.saveJobWithSequence({ job: job('job_test_count_2', 200), seq: 2, nonce: 'n2' });
+  assert.equal(await memory.countJobsSince('dev_test_1', 0), 2);
+  assert.equal(await memory.countJobsSince('dev_test_1', 150), 1);
+  assert.equal(await memory.countJobsSince('dev_other_1', 0), 0);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-jobs-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'jobs.sqlite');
+  const store = new SqliteJobStore({ filePath: file });
+  await store.saveJobWithSequence({ job: job('job_test_count_1', 100), seq: 1, nonce: 'n1' });
+  await store.saveJobWithSequence({ job: job('job_test_count_2', 200), seq: 2, nonce: 'n2' });
+  assert.equal(await store.countJobsSince('dev_test_1', 0), 2);
+  assert.equal(await store.countJobsSince('dev_test_1', 150), 1);
+  assert.equal(await store.countJobsSince('dev_other_1', 0), 0);
+  await store.close();
+});

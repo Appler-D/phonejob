@@ -17,6 +17,14 @@ export class MemoryJobStore {
     return [...this.jobs.values()].sort((left, right) => right.created_at - left.created_at);
   }
 
+  async countJobsSince(deviceId, since) {
+    let count = 0;
+    for (const job of this.jobs.values()) {
+      if (job.device_id === deviceId && job.created_at >= since) count += 1;
+    }
+    return count;
+  }
+
   async saveJobWithSequence({ job, seq, nonce }) {
     if (this.jobs.has(job.job_id)) return false;
     const state = this.deviceState.get(job.device_id) ?? { lastSeq: 0, nonces: new Set() };
@@ -120,6 +128,13 @@ export class SqliteJobStore {
 
   async listJobs() {
     return this.db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
+  }
+
+  async countJobsSince(deviceId, since) {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS count FROM jobs WHERE device_id = ? AND created_at >= ?')
+      .get(deviceId, since);
+    return Number(row?.count ?? 0);
   }
 
   async saveJobWithSequence({ job, seq, nonce }) {
