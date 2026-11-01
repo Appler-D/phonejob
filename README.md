@@ -9,8 +9,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 ## 状态
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
-- 实现：未开始
-- 安全评审：进行中；当前设计不应直接部署到公网
+- 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0 待定案）
+- 实现：未开始；当前设计不应直接部署到公网
 
 ## 许可：源码可见，但禁止商业使用与劳动剥削
 
