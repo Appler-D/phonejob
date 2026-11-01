@@ -1,0 +1,14 @@
+{
+  "name": "phonejob-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "DSH plugin that executes approved PhoneJob tasks and writes results.",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

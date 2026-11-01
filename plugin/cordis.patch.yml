@@ -1,0 +1,6 @@
+# PhoneJob bundle patch: insert the plugin row over the profile tree.
+- insert:
+    - id: phone-job
+      name: 'phonejob-plugin'
+      config:
+        pollMs: 5000

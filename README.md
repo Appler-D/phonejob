@@ -10,7 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 设计稿：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
-- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对、TOTP、发送任务与附件、挑战响应与结果展示 / 服务端 job 校验、分片上传、pending 落盘、挑战码与电脑审批、结果加密回传）；DSH 插件执行、结果文件未开始；当前设计不应直接部署到公网
+- 实现：P0 起步（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对、TOTP、发送任务与附件、挑战响应与结果展示 / 服务端 job 校验、分片上传、pending 落盘、挑战码与电脑审批、结果加密回传 / DSH 插件认领与结果回写，桌面实机任务执行待验证）；结果文件未开始；当前设计不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
 ## 开发（P0 起步）
@@ -32,10 +32,13 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
 - `pwa/store.js`：IndexedDB 保存设备元数据、TOTP 密钥，以及不可导出的 `kEnc/kConfirm/kAuth`
 - `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；发送任务表单（工作区从二维码预填、seq 持久化、可选附件分片上传）；轮询状态、显示挑战码/响应码；结果返回后解密显示
+- `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`
+- `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；54 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传，`pending/` 复核后审批进 `approved/`；`K_otp`/`kEnc`/`kConfirm` 均 `extractable:false`；SQLite 设备/job 持久化
-- 下一步：DSH 插件认领 `approved/`、执行并写 `done/`、结果文件、确认超时/自动拒绝、Service Worker/Web Push、iOS Safari 实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；55 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；DSH 临时 profile 的 `--dump-config` 能看到 `phone-job` 行；插件纯函数（认领、附件复制、提示词、结果解析/回写）已测
+- DSH 实机启动受本机版本/凭据格式阻塞：桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 与 npx CLI `0.1.0-rc.6` 不兼容（凭据在插件之前就中止）；没有修改你的凭据文件
+- 下一步：在桌面版安装插件并跑一条真实任务；结果文件、确认超时/自动拒绝、Service Worker/Web Push、iOS Safari 实测
 
 ```bash
 npm install
@@ -62,7 +65,19 @@ PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，met
 
 审批流程：PWA 发送任务后显示电脑挑战码与手机响应码；打开电脑 `http://127.0.0.1:7789/jobs`，选择任务，核对挑战码，输入手机响应码并批准。确认码绑定 `job_hash`，错误响应不会移动 `pending/`。
 
-结果回传：执行器（下一步的 DSH 插件）把 `done/<job_id>/result.json` 写入收件箱；bridge 每秒扫描、校验和密钥扫描后把结果用设备 `K_enc` 加密；PWA 通过签名接口拉取并解密显示。结果里的文件暂不支持。
+结果回传：DSH 插件把 `done/<job_id>/result.json` 写入收件箱；bridge 每秒扫描、校验和密钥扫描后把结果用设备 `K_enc` 加密；PWA 通过签名接口拉取并解密显示。结果里的文件暂不支持。
+
+## DSH 插件
+
+插件是自带 bundle patch 的本地包；用 DSH 自带的 CLI 安装，然后重启桌面应用：
+
+```powershell
+dsh plugin --profile desktop add link:D:\phonejob\plugin
+```
+
+插件默认监听 `%DSH_HOME%\phone-inbox`，与 bridge 默认一致。审批后的任务会被认领，附件复制到 `<workspace>\.phonejob\<job_id>\`，插件按 workspace 复用专用会话；agent 的最终回复自动回写结果。桌面版首次运行会在 DSH 里出现对应会话，工具调用可能仍需你在 DSH 中确认。
+
+> 本机 npx CLI 是 `0.1.0-rc.6`、桌面版是 `0.2.0-rc.2`，两者凭据文件格式不一致；实机验证请用桌面版自带的 CLI/应用，不要用 npx CLI 启动同一个 `DSH_HOME`。
 
 `bridge/index.js` 首次启动也会加载/生成 `K_otp`；本地管理 token 写到 `%DSH_HOME%\phonejob\admin.token`，不打印到日志。
 

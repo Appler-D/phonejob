@@ -123,15 +123,14 @@
 `job.json` 结构见 §6。DSH 插件**只读 `approved/`**。
 
 ### 4.5 DSH 插件 `dsh-phone-job`
-- 形态：cordis bundle 插件（参考 `dsh-plugin-desktop-notify` 的结构），`cordis.patch.yml` 插入一行。
-- 提供工具：
-  - `phone_job_list(status)` — 列出任务
-  - `phone_job_read(id)` — 读任务正文 + 文件清单（路径、大小、sha256）
-  - `phone_job_claim(id)` — 认领，防止重复执行
-  - `phone_job_reply(id, text, files?)` — 写结果并标记完成
-- 唤醒机制：插件每 5s 轮询 `approved/`；发现未认领任务时，通过 Host 的 session 服务向**专用会话**追加一条 user 消息（内容 = 任务正文 + 文件绝对路径 + 执行约束），由 agent 正常处理。
-  - 若宿主不提供追加消息 API，降级为：插件在会话里注册一个"待办"提示 + 由 bridge 调用本地 DSH `/api`（需本地 auth token）。
-- 结果：`phone_job_reply` 写 `done/<id>/result.json`，bridge 监听到后加密回传。
+- 形态：本地 Cordis bundle 插件（`dsh.bundle.patch` + `cordis.patch.yml`），安装时自动插入 `phone-job` 行。
+- 实际实现（`plugin/index.js`）：
+  - 每 5s 轮询 `approved/`，原子认领到 `working/`（启动时也恢复 `working/` 中未完成的任务）
+  - 把附件从收件箱复制到 `<workspace>/.phonejob/<job_id>/`，让 agent 的沙箱可读
+  - 通过 `ctx.agents` 按 workspace 复用专用会话，`agent.followup` 追加任务消息并 `whenIdle` 等待
+  - 自动把该轮最后一条 assistant 文本写成 `done/<id>/result.json`；不需要额外的 `phone_job_reply` 工具
+- 未实现：`phone_job_list/read/claim/reply` 工具（由自动收集替代）、结果文件回传、30 分钟执行超时。
+- 桌面实机执行待验证（本机 npx CLI 与桌面版凭据格式不一致，见 README）。
 
 ### 4.6 结果回传
 - 当前实现只支持 ≤200KB 文本结果；`result.files` 非空视为失败，文件结果下一阶段。
@@ -343,18 +342,19 @@ CREATED ──上传完成──▶ UPLOADED ──解密/验签/验TOTP通过�
 
 ## 10. DSH 侧执行（插件行为）
 
-1. 轮询 `approved/`，取最早未认领任务，`claim` 原子重命名到 `working/`。
-2. 在专用会话（`session title = "手机任务"`）追加 user 消息：
+1. 轮询 `approved/`，取最早未认领任务，原子重命名到 `working/`；同时恢复 `working/` 中未完成的任务。
+2. 把附件复制到 `<target.workspace>/.phonejob/<id>/`，在按 workspace 复用的专用会话追加 user 消息：
    ```
    [PHONEJOB <id>] 来自手机的任务。
-   目标：<target.workspace> / preset=<preset>
+   目标工作区：<target.workspace>
+   类型：<intent>
    要求：<text>
-   文件：<绝对路径列表>（只读，勿执行）
-   约束：不得修改 ~/.dsh/sessions；完成后必须调用 phone_job_reply。
+   附件：<workspace>/.phonejob/<id>/...（只读，勿执行）
+   约束：只在目标工作区内操作；不得修改 ~/.dsh/sessions；完成后用最终回复给出结果。
    ```
-3. agent 执行完调用 `phone_job_reply(id, text, files)`。
-4. 插件写 `done/<id>/`，bridge 加密回传。
-5. 超时（`DEFAULT` 30 分钟）→ `FAILED`，回传错误摘要。
+3. `agent.followup` + `whenIdle` 等待该轮结束。
+4. 自动提取最后一条 assistant 文本，写 `done/<id>/result.json`；bridge 扫描并加密回传。
+5. 未实现 30 分钟执行超时；桌面实机执行待验证。
 
 ---
 
@@ -479,10 +479,11 @@ cloudflared tunnel run phonejob
 | 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核 |
 | 结果文件 | `result.files` 非空视为失败，下一阶段 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
-| 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED`；DSH 执行下一步 |
+| 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
+| DSH 插件 | 已实现认领/会话唤醒/最终回复回写；桌面实机任务执行待验证 |
 | 确认超时 | 尚未自动拒绝；P2 后续补 |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v1.7 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PC 配对首页/QR；job 校验；PWA 发送任务 + 附件分片；电脑审批；结果加密回传；其余评审项待定*
+*版本 v1.8 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PC 配对首页/QR；job 校验；PWA 任务 + 附件分片；电脑审批；结果加密回传；DSH 插件认领/会话唤醒/结果回写；其余评审项待定*
