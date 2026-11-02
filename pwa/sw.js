@@ -1,10 +1,62 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
-self.addEventListener('install', () => {
-  self.skipWaiting();
+const CACHE_NAME = 'phonejob-shell-v1';
+const SHELL = [
+  './',
+  './index.html',
+  './app.js',
+  './crypto.js',
+  './store.js',
+  './outbox.js',
+  './style.css',
+  './manifest.webmanifest',
+  './icon.svg',
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(SHELL))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)));
+      await self.clients.claim();
+    })(),
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  event.respondWith(
+    (async () => {
+      try {
+        const response = await fetch(request);
+        if (response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(request, response.clone());
+        }
+        return response;
+      } catch {
+        const cached = await caches.match(request);
+        if (cached) return cached;
+        if (request.mode === 'navigate') {
+          const shell = await caches.match('./index.html');
+          if (shell) return shell;
+        }
+        return Response.error();
+      }
+    })(),
+  );
 });
 
 self.addEventListener('push', (event) => {

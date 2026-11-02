@@ -38,13 +38,13 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
 - `pwa/store.js`：IndexedDB 保存设备元数据、TOTP 密钥、不可导出的 `kEnc/kConfirm/kAuth`，以及加密的待发送队列
 - `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；启动/发送前用签名刷新接口获取轮换后的 `K_otp`；发送任务表单（工作区从二维码预填、seq 持久化、可选附件分片上传）；网络失败时文本任务加密进入 IndexedDB 队列并按指数退避重试（最长 10 分钟，附件任务暂不排队）；可启用 Web Push 完成通知；轮询并解密状态、显示挑战码/响应码；结果返回后解密显示并下载结果文件；所有请求带超时，避免挂起阻塞队列
-- `pwa/sw.js`：接收推送并显示通知，点击通知回到 PWA
+- `pwa/sw.js`：缓存应用壳（网络优先、失败回退缓存），断网仍可打开 PWA；接收推送并显示通知，点击通知回到 PWA
 - `pwa/outbox.js`：离线队列退避与过期判断
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
 - 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；95 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；浏览器实测配对/TOTP、加密状态、结果与文件下载、bridge 重启后的离线队列补投、Service Worker 注册；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip/Office 容器扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、iOS 推送与桌面 DSH 真实模型尚未实测
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；浏览器实测配对/TOTP、加密状态、结果与文件下载、bridge 重启后的离线队列补投、Service Worker 注册与断网离线壳加载；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip/Office 容器扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、iOS 推送与桌面 DSH 真实模型尚未实测
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；配置稳定 HTTPS PWA origin 与真实推送服务实测 Web Push；iOS Safari 实测
 

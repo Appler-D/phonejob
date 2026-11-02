@@ -1132,6 +1132,10 @@ rePairButton.addEventListener('click', async () => {
 });
 window.addEventListener('online', () => {
   void refreshOtpKey();
+  void processOutbox();
 });
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
 
 init();
