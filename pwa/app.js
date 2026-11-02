@@ -119,6 +119,19 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new TypeError('请求超时');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function stopTotp() {
   if (totpTimer) {
     clearInterval(totpTimer);
@@ -245,7 +258,7 @@ async function errorText(response) {
 async function waitForProvision(base, payload, deviceId, proof) {
   const deadline = payload.expires_at + 7 * 60_000;
   while (Date.now() < deadline) {
-    const response = await fetch(`${base}/api/pair/provision`, {
+    const response = await fetchWithTimeout(`${base}/api/pair/provision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pair_id: payload.pair_id, device_id: deviceId, proof }),
@@ -287,7 +300,7 @@ async function startPairing() {
     );
 
     setStatus('提交配对…');
-    const claimResponse = await fetch(`${base}/api/pair/claim`, {
+    const claimResponse = await fetchWithTimeout(`${base}/api/pair/claim`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pair_id: payload.pair_id, phone_pub: phonePub, proof: claimProof }),
@@ -366,7 +379,7 @@ async function refreshOtpKey() {
         }),
       ),
     );
-    const response = await fetch(`${currentDevice.bridge_url}/api/device/otp`, {
+    const response = await fetchWithTimeout(`${currentDevice.bridge_url}/api/device/otp`, {
       headers: {
         'X-PhoneJob-Device': currentDevice.device_id,
         'X-PhoneJob-Ts': String(ts),
@@ -420,7 +433,7 @@ async function ensurePushSubscription(interactive) {
     }
     const registration = await navigator.serviceWorker.register('./sw.js');
     await navigator.serviceWorker.ready;
-    const health = await fetch(`${currentDevice.bridge_url}/api/health`);
+    const health = await fetchWithTimeout(`${currentDevice.bridge_url}/api/health`);
     const info = await health.json().catch(() => null);
     if (!health.ok || typeof info?.vapid_public_key !== 'string') {
       throw new Error('服务器未启用通知');
@@ -455,7 +468,7 @@ async function ensurePushSubscription(interactive) {
         }),
       ),
     );
-    const response = await fetch(`${currentDevice.bridge_url}/api/device/push`, {
+    const response = await fetchWithTimeout(`${currentDevice.bridge_url}/api/device/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -490,7 +503,7 @@ async function fetchJobStatus(jobId) {
       }),
     ),
   );
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}`,
     {
       headers: {
@@ -530,7 +543,7 @@ async function fetchJobResult(jobId) {
       }),
     ),
   );
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/result`,
     {
       headers: {
@@ -539,6 +552,7 @@ async function fetchJobResult(jobId) {
         'X-PhoneJob-Proof': proof,
       },
     },
+    15_000,
   );
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
@@ -569,7 +583,7 @@ async function fetchJobResultFile(jobId, fileIndex) {
       }),
     ),
   );
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/result/file/${fileIndex}`,
     {
       headers: {
@@ -578,6 +592,7 @@ async function fetchJobResultFile(jobId, fileIndex) {
         'X-PhoneJob-Proof': proof,
       },
     },
+    30_000,
   );
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
@@ -709,7 +724,7 @@ async function submitOutboxEntry(entry, deviceKeys) {
   );
   let response;
   try {
-    response = await fetch(`${currentDevice.bridge_url}/api/job`, {
+    response = await fetchWithTimeout(`${currentDevice.bridge_url}/api/job`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(envelope),
@@ -907,7 +922,7 @@ async function uploadJobFiles(jobId, files, deviceKeys) {
           }),
         ),
       );
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `${currentDevice.bridge_url}/api/job/${encodeURIComponent(jobId)}/file/${fileIndex}`,
         {
           method: 'PUT',
@@ -919,6 +934,7 @@ async function uploadJobFiles(jobId, files, deviceKeys) {
           },
           body: JSON.stringify(envelope),
         },
+        15_000,
       );
       const body = await response.json().catch(() => null);
       if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
@@ -997,11 +1013,15 @@ async function sendJob() {
       reply: { want: 'text', max_bytes: 20 * 1024 * 1024 },
     };
     const envelope = await sealEnvelope(deviceKeys.enc, header, JSON.stringify(job));
-    const response = await fetch(`${currentDevice.bridge_url}/api/job`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(envelope),
-    });
+    const response = await fetchWithTimeout(
+      `${currentDevice.bridge_url}/api/job`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(envelope),
+      },
+      15_000,
+    );
     const body = await response.json().catch(() => null);
     if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
     currentDevice.seq = seq;
