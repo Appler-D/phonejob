@@ -502,4 +502,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v4.0 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；RUNNING/DONE/FAILED 状态闭环；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器与外部关系扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列/离线壳；Web Push；备份恢复；CI/Windows 自启动；浏览器 E2E 已验证；其余评审项待定*
+*版本 v4.1 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；RUNNING/DONE/FAILED 状态闭环；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器与外部关系扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列/离线壳；Web Push；备份恢复；CI/Windows 自启动；PWA 子路径与部署检查表；浏览器 E2E 已验证；其余评审项待定*

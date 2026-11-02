@@ -227,12 +227,17 @@ export function createBridgeServers({
   localPort = 7789,
   version = '0.1.0',
   pwaOrigin = null,
+  pwaUrl = null,
   workspaces = [],
   vapidPublicKey = null,
 } = {}) {
   if (!pairing) throw new TypeError('pairing is required');
 
   const allowedPwaOrigin = pwaOrigin ? new URL(pwaOrigin).origin : null;
+  const pwaBase = pwaUrl ? new URL(pwaUrl) : null;
+  if (pwaBase && allowedPwaOrigin && pwaBase.origin !== allowedPwaOrigin) {
+    throw new Error('PHONEJOB_PWA_URL must use PHONEJOB_PWA_ORIGIN');
+  }
   const localTokens = new Map();
   let actualApiPort = apiPort;
   let actualLocalPort = localPort;
@@ -491,7 +496,8 @@ export function createBridgeServers({
         let qrDataUrl = null;
         if (allowedPwaOrigin) {
           const payload = Buffer.from(JSON.stringify(qrPayload), 'utf8').toString('base64url');
-          pwaUrl = `${allowedPwaOrigin}/#pair=${payload}`;
+          const basePath = pwaBase ? pwaBase.pathname.replace(/\/?$/, '/') : '/';
+          pwaUrl = `${allowedPwaOrigin}${basePath}#pair=${payload}`;
           const qr = qrcode(0, 'M');
           qr.addData(pwaUrl);
           qr.make();

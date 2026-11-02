@@ -4,6 +4,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Workspace,
   [string]$PwaOrigin = '',
+  [string]$PwaUrl = '',
+  [string]$VapidSubject = '',
   [string]$DshHome = '',
   [string]$NodePath = '',
   [string]$Inbox = '',
@@ -45,6 +47,8 @@ $lines = @(
   "`$env:PHONEJOB_LOCAL_PORT = $(Quote-Ps ([string]$LocalPort))"
 )
 if ($PwaOrigin) { $lines += "`$env:PHONEJOB_PWA_ORIGIN = $(Quote-Ps $PwaOrigin)" }
+if ($PwaUrl) { $lines += "`$env:PHONEJOB_PWA_URL = $(Quote-Ps $PwaUrl)" }
+if ($VapidSubject) { $lines += "`$env:PHONEJOB_VAPID_SUBJECT = $(Quote-Ps $VapidSubject)" }
 if ($Inbox) { $lines += "`$env:PHONEJOB_INBOX = $(Quote-Ps $Inbox)" }
 $lines += "Set-Location -LiteralPath $(Quote-Ps $repo)"
 $lines += "& $(Quote-Ps $NodePath) $(Quote-Ps 'bridge\index.js') *>> $(Quote-Ps $log)"

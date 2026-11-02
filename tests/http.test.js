@@ -70,7 +70,7 @@ async function readStatusResponse(response, kEnc, ts) {
   return JSON.parse(Buffer.from(opened.plaintext).toString('utf8'));
 }
 
-async function setup(t, { pwaOrigin = null } = {}) {
+async function setup(t, { pwaOrigin = null, pwaUrl = null } = {}) {
   const otpSecret = generateOtpSecret();
   const loadOtp = async () => ({ secret: otpSecret, keyId: 'key-test' });
   const pairing = new PairingService({ loadOtp });
@@ -94,6 +94,7 @@ async function setup(t, { pwaOrigin = null } = {}) {
     localPort: 0,
     version: 'test',
     pwaOrigin,
+    pwaUrl,
     workspaces: [workspace],
     vapidPublicKey: 'test-vapid-key',
   });
@@ -705,6 +706,17 @@ test('API only allows the configured PWA origin', async (t) => {
   });
   assert.equal(localDevices.status, 200);
   assert.equal(localDevices.headers['access-control-allow-origin'], undefined);
+});
+
+test('pairing QR respects a PWA subpath', async (t) => {
+  const origin = 'https://pwa.example';
+  const { local } = await setup(t, {
+    pwaOrigin: origin,
+    pwaUrl: `${origin}/phonejob/`,
+  });
+  const response = await startPairing(local);
+  assert.equal(response.status, 200, response.body);
+  assert.match(parse(response).pwa_url, /^https:\/\/pwa\.example\/phonejob\/#pair=/);
 });
 
 function localUrlPath(start, token) {

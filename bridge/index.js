@@ -124,6 +124,7 @@ const servers = createBridgeServers({
   localPort,
   version: VERSION,
   pwaOrigin: process.env.PHONEJOB_PWA_ORIGIN || null,
+  pwaUrl: process.env.PHONEJOB_PWA_URL || process.env.PHONEJOB_PWA_ORIGIN || null,
   workspaces: workspaceAllowlist,
   vapidPublicKey: vapid.publicKey,
 });

@@ -10,6 +10,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 
 - 实现方案：[docs/implementation-plan.md](docs/implementation-plan.md)
 - 安全评审：[docs/security-review.md](docs/security-review.md)（6 个 P0；密码子归属已定）
+- 部署检查表：[docs/deployment.md](docs/deployment.md)
 - 实现：核心通道（电脑端 `K_otp` / DPAPI / TOTP / P-256 配对 / 配对服务 / HTTP 与本地确认页 / PC 配对首页与 QR / SQLite 设备与 job 状态 / PWA 配对、TOTP、发送任务与附件、挑战响应与结果展示、结果文件下载 / 服务端 job 校验、分片上传、pending 落盘、挑战码与电脑审批、结果加密回传、结果文件校验与加密下载、确认/上传/执行超时 / DSH 插件认领、会话唤醒、结果与文件回写，隔离 DSH 已验，桌面真实模型回复待验证）；未经独立安全审计，不应直接部署到公网
 - 密码子归属：电脑首次安装时生成 `K_otp`，手机只加载 TOTP 公式并计算，不生成密码子
 
@@ -43,8 +44,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；97 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；浏览器实测配对/TOTP、加密状态、结果与文件下载、bridge 重启后的离线队列补投、Service Worker 注册与断网离线壳加载；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、RUNNING 状态检测、结果文件哈希/密钥扫描与加密下载、zip/Office 容器扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、iOS 推送与桌面 DSH 真实模型尚未实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；98 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；浏览器实测配对/TOTP、加密状态、结果与文件下载、bridge 重启后的离线队列补投、Service Worker 注册与断网离线壳加载；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、RUNNING 状态检测、结果文件哈希/密钥扫描与加密下载、zip/Office 容器扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和、PWA 子路径二维码已用单元/HTTP 测试覆盖；真实推送服务、iOS 推送与桌面 DSH 真实模型尚未实测
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；配置稳定 HTTPS PWA origin 与真实推送服务实测 Web Push；iOS Safari 实测
 
@@ -69,7 +70,7 @@ node tools/restore.mjs D:/phonejob-backup --force
 Windows 登录自启动（创建当前用户的计划任务，日志在 `%LOCALAPPDATA%\PhoneJob\bridge.log`）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/install-autostart.ps1 -Workspace "D:\your-workspace" -PwaOrigin "https://your-pwa-origin"
+powershell -ExecutionPolicy Bypass -File tools/install-autostart.ps1 -Workspace "D:\your-workspace" -PwaOrigin "https://your-pwa-origin" -PwaUrl "https://your-pwa-origin/phonejob/"
 powershell -ExecutionPolicy Bypass -File tools/remove-autostart.ps1
 ```
 
@@ -91,7 +92,7 @@ node bridge/index.js
 
 队列与磁盘：同时活跃任务默认上限 20（`PHONEJOB_MAX_ACTIVE_JOBS`），收件箱总字节默认上限 2GB（`PHONEJOB_MAX_INBOX_BYTES`）；超限拒绝新任务，已有任务仍可完成。
 
-PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
+PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。托管在子路径（如 GitHub Pages 的 `/phonejob/`）时，另设 `PHONEJOB_PWA_URL=https://<user>.github.io/phonejob/`，二维码会使用该完整地址。
 
 Web Push 需要 HTTPS 的 PWA origin（或 localhost 调试）和可访问的推送服务；VAPID 私钥由 DPAPI 保存到 `%DSH_HOME%\phonejob\vapid.bin`，可用 `PHONEJOB_VAPID_SUBJECT` 设置 VAPID 联系人（默认 `mailto:phonejob@localhost`）。
 
