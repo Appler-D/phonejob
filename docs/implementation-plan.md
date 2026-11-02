@@ -1,6 +1,6 @@
 # PhoneJob · 手机 → 电脑任务通道 实现方案
 
-> **状态**：v1.1 设计稿（2026-11-01），尚未实现，未经独立安全评审；不要直接部署到公网。v1.1 起 `K_otp` 由电脑端生成并下发，详见 §7.1；其余评审项见 [security-review.md](security-review.md)。
+> **状态**：v4.0（2026-11-01），核心通道已实现并通过单元/浏览器测试；未经独立安全审计，不要直接部署到公网。`K_otp` 由电脑端生成并下发，详见 §7.1；其余评审项见 [security-review.md](security-review.md)。
 > **许可**：本仓库采用 PhoneJob Noncommercial License 1.0（见 [LICENSE](../LICENSE)）。
 > **路径占位**：文中 `<WORKSPACE>`、`<DSH_INSTALL>`、`<PHONEJOB_HOME>`、`<BACKUP_DIR>` 需替换为本机实际路径。
 > **交接对象**：任意具备文件读写与命令执行能力的实现 agent。
@@ -312,14 +312,17 @@ UPLOADING ──分片完成──▶ WAITING_CONFIRM
 | POST | `/api/pair/claim` | 手机提交公钥 + SAS 证明 |
 | POST | `/api/pair/provision` | 配对确认后，电脑用 `K_enc` 下发电脑生成的 `K_otp` |
 | POST | `/api/job` | 提交密文信封（≤ 1MB 元数据；文件走分片） |
-| PUT | `/api/job/:id/file/:idx` | 分片上传密文块（`Content-Range`） |
-| GET | `/api/job/:id` | 查询状态 + 挑战码（设备签名 `X-PhoneJob-Device/Ts/Proof`） |
+| PUT | `/api/job/:id/file/:idx` | 分片上传密文块（512KB；服务端复核 SHA-256） |
+| GET | `/api/job/:id` | 查询加密状态信封（设备签名 `X-PhoneJob-Device/Ts/Proof`） |
 | GET | `/api/job/:id/result` | 取加密结果（设备签名 `job-result-v1`） |
+| GET | `/api/job/:id/result/file/:idx` | 取加密结果文件（签名绑定 file_index） |
+| GET | `/api/device/otp` | 刷新轮换后的 `K_otp`（设备签名） |
+| POST | `/api/device/push` | 注册 Web Push 订阅（设备签名） |
 | DELETE | `/api/device/:id` | 吊销设备（仅本地发起） |
 
 > PWA 独立 origin 时，API 只允许配置的 `PHONEJOB_PWA_ORIGIN` 的 CORS；本地 7789 不设 CORS。
 >
-> 本地 7789 另有 `GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/approve|reject`（admin）；审批把目录从 `pending/` 移到 `approved/` 或 `rejected/`。文件分片仍未实现。
+> 本地 7789 另有 `GET /api/jobs`、`GET /api/jobs/:id`、`POST /api/jobs/:id/approve|reject`（admin）；审批把目录从 `pending/` 移到 `approved/` 或 `rejected/`。文件分片已实现（512KB 分片 + SHA-256 复核）。
 
 ### 8.2 设备会话令牌
 - 每次连接先 `POST /api/session`：服务端发一次性 nonce，手机用
