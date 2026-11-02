@@ -244,6 +244,7 @@ export class JobService {
     this.scanning = false;
     this.timeoutScanning = false;
     this.retentionScanning = false;
+    this.runningScanning = false;
   }
 
   #audit(event, job, extra = {}) {
@@ -741,6 +742,29 @@ export class JobService {
       if (!check.ok) return check;
     }
     return { ok: true };
+  }
+
+  async scanRunning() {
+    if (this.runningScanning) return [];
+    this.runningScanning = true;
+    const running = [];
+    try {
+      const now = this.now();
+      for (const job of await this.jobStore.listJobs()) {
+        if (job.state !== 'QUEUED') continue;
+        if (!(await pathExists(path.join(this.inboxDir, 'working', job.job_id)))) continue;
+        const updated = await this.jobStore.markRunning({
+          jobId: job.job_id,
+          updatedAt: now,
+        });
+        if (!updated) continue;
+        this.#audit('job.running', job, { state: 'RUNNING' });
+        running.push({ job_id: job.job_id, state: 'RUNNING' });
+      }
+      return running;
+    } finally {
+      this.runningScanning = false;
+    }
   }
 
   async scanResults() {

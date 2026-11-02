@@ -487,7 +487,7 @@ cloudflared tunnel run phonejob
 | 结果保留 | `done/`、`working/` 默认 7 天；过期 `EXPIRED`/`RESULT_EXPIRED`；`rejected/`、`expired/` 同 TTL 清理 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
-| DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；隔离 DSH 已验，桌面真实模型回复待验证 |
+| DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；bridge 观察 `working/` 标记 `RUNNING`；隔离 DSH 已验，桌面真实模型回复待验证 |
 | 超时 | 上传 30 分钟、确认 10 分钟 → `EXPIRED`；执行 35 分钟兜底 `FAILED` |
 | 审计 | 配对/任务 JSONL；字段白名单；5MB 轮转保留 4 份；启动时清理 90 天前条目 |
 | 限流 | 每设备 10 任务/小时；OTP/挑战码 3 次锁 5 分钟、10 次锁 1 小时（SQLite）；本地页提示 |
@@ -499,4 +499,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v3.9 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器与外部关系扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列/离线壳；Web Push；备份恢复；CI/Windows 自启动；浏览器 E2E 已验证；其余评审项待定*
+*版本 v4.0 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；RUNNING/DONE/FAILED 状态闭环；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器与外部关系扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列/离线壳；Web Push；备份恢复；CI/Windows 自启动；浏览器 E2E 已验证；其余评审项待定*

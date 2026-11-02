@@ -134,11 +134,16 @@ let retentionTimer = null;
 
 try {
   await servers.start();
-  resultTimer = setInterval(() => {
+  const scanResults = () => {
     jobs.scanResults().catch((err) => {
       console.error(`result scan failed: ${err.message}`);
     });
-  }, 1000);
+    jobs.scanRunning().catch((err) => {
+      console.error(`running scan failed: ${err.message}`);
+    });
+  };
+  scanResults();
+  resultTimer = setInterval(scanResults, 1000);
   const scanTimeouts = () => {
     jobs.scanTimeouts().catch((err) => {
       console.error(`timeout scan failed: ${err.message}`);

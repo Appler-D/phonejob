@@ -181,3 +181,29 @@ test('auth failure state persists and clears', async (t) => {
   assert.equal((await reopened.listAuthFailures()).length, 0);
   await reopened.close();
 });
+
+test('markRunning only advances queued jobs', async (t) => {
+  const memory = new MemoryJobStore();
+  await memory.saveJobWithSequence({
+    job: { ...job('job_test_running', 1), state: 'QUEUED' },
+    seq: 1,
+    nonce: 'n1',
+  });
+  assert.equal(await memory.markRunning({ jobId: 'job_test_running', updatedAt: 2 }), true);
+  assert.equal((await memory.getJob('job_test_running')).state, 'RUNNING');
+  assert.equal(await memory.markRunning({ jobId: 'job_test_running', updatedAt: 3 }), false);
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-jobs-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'jobs.sqlite');
+  const store = new SqliteJobStore({ filePath: file });
+  await store.saveJobWithSequence({
+    job: { ...job('job_test_running', 1), state: 'QUEUED' },
+    seq: 1,
+    nonce: 'n1',
+  });
+  assert.equal(await store.markRunning({ jobId: 'job_test_running', updatedAt: 2 }), true);
+  assert.equal((await store.getJob('job_test_running')).state, 'RUNNING');
+  assert.equal(await store.markRunning({ jobId: 'job_test_running', updatedAt: 3 }), false);
+  await store.close();
+});

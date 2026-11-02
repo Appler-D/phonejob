@@ -844,8 +844,10 @@ async function watchJob(jobId) {
       }
       if (status.state === 'UPLOADING') {
         jobStateEl.textContent = '正在接收文件…';
-      } else if (status.state === 'QUEUED' || status.state === 'RUNNING') {
+      } else if (status.state === 'QUEUED') {
         jobStateEl.textContent = '电脑已批准，等待执行';
+      } else if (status.state === 'RUNNING') {
+        jobStateEl.textContent = '电脑正在执行…';
       } else if (status.state === 'REJECTED') {
         jobStateEl.textContent = '电脑已拒绝';
         stopJobWatch();

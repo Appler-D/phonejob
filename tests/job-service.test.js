@@ -1547,3 +1547,39 @@ test('inbox byte limit rejects new jobs', async (t) => {
   await rm(blob);
   assert.equal((await f.service.submit(blocked)).state, 'WAITING_CONFIRM');
 });
+
+test('a claimed working job is marked running', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const jobId = 'job_test_running';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+    }),
+  );
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  await mkdir(path.join(f.inbox, 'working', jobId), { recursive: true });
+  await writeFile(path.join(f.inbox, 'working', jobId, 'marker'), 'running');
+
+  const running = await f.service.scanRunning();
+  assert.equal(running.length, 1);
+  assert.equal(running[0].state, 'RUNNING');
+  assert.equal((await f.service.getJob(jobId)).state, 'RUNNING');
+  assert.deepEqual(await f.service.scanRunning(), []);
+
+  const ts = Math.floor(now / 1000);
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const status = await readStatus(f.service, { jobId, deviceId: DEVICE_ID, ts, proof });
+  assert.equal(status.state, 'RUNNING');
+});

@@ -78,6 +78,14 @@ export class MemoryJobStore {
     return true;
   }
 
+  async markRunning({ jobId, updatedAt }) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.state !== 'QUEUED') return false;
+    job.state = 'RUNNING';
+    job.updated_at = updatedAt;
+    return true;
+  }
+
   async completeUpload({ jobId, challenge, jobHash, inboxPath, updatedAt }) {
     const job = this.jobs.get(jobId);
     if (!job || job.state !== 'UPLOADING') return false;
@@ -266,6 +274,17 @@ export class SqliteJobStore {
         WHERE job_id = ? AND state IN ('QUEUED', 'RUNNING')
       `)
       .run(state, resultError, finishedAt, finishedAt, jobId);
+    return result.changes > 0;
+  }
+
+  async markRunning({ jobId, updatedAt }) {
+    const result = this.db
+      .prepare(`
+        UPDATE jobs
+        SET state = 'RUNNING', updated_at = ?
+        WHERE job_id = ? AND state = 'QUEUED'
+      `)
+      .run(updatedAt, jobId);
     return result.changes > 0;
   }
 
