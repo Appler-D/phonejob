@@ -1050,7 +1050,11 @@ async function sendJob() {
             ? '动态密码子错误次数过多，请稍后再试'
             : err.message === 'JOB_OTP_INVALID'
               ? '动态密码子不正确'
-              : err.message,
+              : err.message === 'JOB_QUEUE_FULL'
+                ? '电脑待处理任务已满，请稍后再试'
+                : err.message === 'JOB_DISK_FULL'
+                  ? '电脑收件箱空间不足，请清理后再试'
+                  : err.message,
     );
   } finally {
     jobSending = false;

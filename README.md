@@ -22,7 +22,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob + Web Push 订阅；内存 store 供测试
 - `bridge/vapid-store.js`：DPAPI 保护 VAPID P-256 公私钥（`vapid.bin`）
 - `bridge/push.js` / `bridge/push-service.js`：RFC 8291 `aes128gcm` 负载加密、VAPID JWT 签名、推送投递与 404/410 订阅清理
-- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、OTP/挑战码失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询（状态响应用 `K_enc` 加密并绑定请求 ts）、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时、结果与收件箱保留清理
+- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、活跃任务/收件箱字节上限、OTP/挑战码失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询（状态响应用 `K_enc` 加密并绑定请求 ts）、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时、结果与收件箱保留清理
 - `bridge/zip-scan.js`：`zip` 内部路径、类型、加密、嵌套深度、条目数与解压大小检查；结果文件同样扫描
 - `bridge/confirm.js`：HMAC-SHA256 + Base32 的 8 位确认码（绑定 `job_hash` 与挑战码）
 - `bridge/result.js`：结果与结果文件元数据校验、大小/类型限制、密钥/私钥模式扫描；`K_otp` 泄露阻断
@@ -42,8 +42,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；91 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、离线队列断网场景和 iOS 推送尚未实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；93 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、离线队列断网场景和 iOS 推送尚未实测
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；配置稳定 HTTPS PWA origin 与真实推送服务实测 Web Push；iOS Safari 实测
 
@@ -78,6 +78,8 @@ node bridge/index.js
 超时默认值：上传 30 分钟、确认 10 分钟（超时移入 `expired/` 并标记 `EXPIRED`）、执行 35 分钟（bridge 兜底标记 `FAILED`；插件自身 30 分钟取消当前轮）。可用 `PHONEJOB_UPLOAD_TTL_MS` / `PHONEJOB_CONFIRM_TTL_MS` / `PHONEJOB_EXECUTION_TTL_MS` 覆盖 bridge 默认值。
 
 限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 或挑战码连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态存 SQLite，bridge 重启后仍保留；本地 `/jobs` 页会显示锁定设备。
+
+队列与磁盘：同时活跃任务默认上限 20（`PHONEJOB_MAX_ACTIVE_JOBS`），收件箱总字节默认上限 2GB（`PHONEJOB_MAX_INBOX_BYTES`）；超限拒绝新任务，已有任务仍可完成。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 

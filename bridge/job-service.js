@@ -33,6 +33,8 @@ const DEFAULT_UPLOAD_TTL_MS = 30 * 60_000;
 const DEFAULT_EXECUTION_TTL_MS = 35 * 60_000;
 const DEFAULT_RESULT_TTL_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_MAX_JOBS_PER_HOUR = 10;
+const DEFAULT_MAX_ACTIVE_JOBS = 20;
+const DEFAULT_MAX_INBOX_BYTES = 2 * 1024 * 1024 * 1024;
 const RATE_WINDOW_MS = 60 * 60_000;
 const FAILURE_WINDOW_MS = 60 * 60_000;
 const FAILURE_LOCK_MS = 5 * 60_000;
@@ -81,6 +83,34 @@ async function pathExists(target) {
   } catch {
     return false;
   }
+}
+
+async function directorySize(root, limit = Number.POSITIVE_INFINITY) {
+  let total = 0;
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (total > limit) return;
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        try {
+          total += (await stat(full)).size;
+        } catch {
+          // The file may have moved between readdir and stat.
+        }
+      }
+    }
+  }
+  await walk(root);
+  return total;
 }
 
 function safeEqualBase64(left, right) {
@@ -146,6 +176,8 @@ export class JobService {
     executionTtlMs = DEFAULT_EXECUTION_TTL_MS,
     resultTtlMs = DEFAULT_RESULT_TTL_MS,
     maxJobsPerHour = DEFAULT_MAX_JOBS_PER_HOUR,
+    maxActiveJobs = DEFAULT_MAX_ACTIVE_JOBS,
+    maxInboxBytes = DEFAULT_MAX_INBOX_BYTES,
     audit = null,
     notify = null,
   } = {}) {
@@ -163,6 +195,8 @@ export class JobService {
     this.executionTtlMs = executionTtlMs;
     this.resultTtlMs = resultTtlMs;
     this.maxJobsPerHour = maxJobsPerHour;
+    this.maxActiveJobs = maxActiveJobs;
+    this.maxInboxBytes = maxInboxBytes;
     this.audit = audit;
     this.notify = notify;
     this.scanning = false;
@@ -312,6 +346,18 @@ export class JobService {
 
     const uploadFiles = validateUploadFiles(job.files);
     const totalFileBytes = uploadFiles.reduce((sum, file) => sum + file.size, 0);
+    const activeJobs = (await this.jobStore.listJobs()).filter((item) =>
+      ['UPLOADING', 'WAITING_CONFIRM', 'QUEUED', 'RUNNING'].includes(item.state),
+    ).length;
+    if (activeJobs >= this.maxActiveJobs) {
+      this.#audit('job.queue_full', { job_id, device_id }, { error: 'JOB_QUEUE_FULL' });
+      throw jobError('JOB_QUEUE_FULL');
+    }
+    const inboxBytes = await directorySize(this.inboxDir, this.maxInboxBytes);
+    if (inboxBytes + totalFileBytes > this.maxInboxBytes) {
+      this.#audit('job.disk_full', { job_id, device_id }, { error: 'JOB_DISK_FULL' });
+      throw jobError('JOB_DISK_FULL');
+    }
     const risk =
       job.intent === 'ask' && totalFileBytes <= 10 * 1024 * 1024 ? 'low' : 'high';
     const jobDir = path.join(this.inboxDir, 'pending', job_id);

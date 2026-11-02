@@ -53,6 +53,8 @@ function envPositiveInt(name, fallback) {
 }
 
 const maxJobsPerHour = envPositiveInt('PHONEJOB_MAX_JOBS_PER_HOUR', 10);
+const maxActiveJobs = envPositiveInt('PHONEJOB_MAX_ACTIVE_JOBS', 20);
+const maxInboxBytes = envPositiveInt('PHONEJOB_MAX_INBOX_BYTES', 2 * 1024 * 1024 * 1024);
 
 if (!Number.isInteger(apiPort) || apiPort < 0 || apiPort > 65535) {
   throw new Error('PHONEJOB_API_PORT must be an integer between 0 and 65535');
@@ -109,6 +111,8 @@ const jobs = new JobService({
   executionTtlMs,
   resultTtlMs,
   maxJobsPerHour,
+  maxActiveJobs,
+  maxInboxBytes,
   audit,
   notify: (event) => push.notify(event),
 });

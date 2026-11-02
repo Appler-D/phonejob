@@ -269,7 +269,7 @@ UPLOADING ──分片完成──▶ WAITING_CONFIRM
 | 电脑端密钥存储 | Windows DPAPI（`CryptProtectData`，用户级）：`K_otp` 在 `keys.bin`；每设备 `kEnc/kConfirm/kAuth` 以 DPAPI blob 存 SQLite |
 
 ### 7.5 限流与锁定
-- 每设备：10 任务/小时（`PHONEJOB_MAX_JOBS_PER_HOUR`），20 文件/任务，单文件 ≤ 50MB，任务总大小 ≤ 200MB；均已实现。
+- 每设备：10 任务/小时（`PHONEJOB_MAX_JOBS_PER_HOUR`），20 文件/任务，单文件 ≤ 50MB，任务总大小 ≤ 200MB；活跃任务上限 20（`PHONEJOB_MAX_ACTIVE_JOBS`），收件箱总字节上限 2GB（`PHONEJOB_MAX_INBOX_BYTES`）；均已实现。
 - 密码子/挑战码错误：同设备 3 次锁 5 分钟、10 次锁 1 小时；已实现并持久化到 SQLite，本地任务页显示被锁定设备与失败次数。
 - 未配对来源：直接 404（不返回任何区分信息）。
 - 任务状态与认证失败写审计日志；审计不含正文、工作区路径、挑战码或密钥。
@@ -490,10 +490,11 @@ cloudflared tunnel run phonejob
 | 超时 | 上传 30 分钟、确认 10 分钟 → `EXPIRED`；执行 35 分钟兜底 `FAILED` |
 | 审计 | 配对/任务 JSONL；字段白名单；5MB 轮转保留 4 份；启动时清理 90 天前条目 |
 | 限流 | 每设备 10 任务/小时；OTP/挑战码 3 次锁 5 分钟、10 次锁 1 小时（SQLite）；本地页提示 |
+| 队列/磁盘 | 活跃任务默认 20、收件箱默认 2GB；超限拒绝新任务 |
 | Web Push | VAPID + RFC 8291 `aes128gcm`；订阅绑定设备；批准/完成/失败/过期通知；404/410 清理订阅；真实推送与 HTTPS origin 待测 |
 | 备份恢复 | SQLite `VACUUM INTO` + keys/vapid/audit/可选 inbox；manifest SHA-256；DPAPI 同用户；恢复需停 bridge |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v3.3 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip 条目扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v3.4 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip 条目扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；DSH 插件隔离实机验证；其余评审项待定*

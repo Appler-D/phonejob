@@ -36,6 +36,8 @@ async function setup(
     executionTtlMs,
     resultTtlMs,
     maxJobsPerHour,
+    maxActiveJobs,
+    maxInboxBytes,
     audit,
     notify,
   } = {},
@@ -67,6 +69,8 @@ async function setup(
     executionTtlMs,
     resultTtlMs,
     maxJobsPerHour,
+    maxActiveJobs,
+    maxInboxBytes,
     audit,
     notify,
   });
@@ -1333,4 +1337,51 @@ test('job transitions call the notifier', async (t) => {
     assert.equal(event.deviceId, DEVICE_ID);
     assert.equal(event.jobId, jobId);
   }
+});
+
+test('active job queue limit rejects new jobs until space frees', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now, maxActiveJobs: 1 });
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: 'job_test_queue_1',
+      seq: 1,
+    }),
+  );
+  const second = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_queue_2',
+    seq: 2,
+  });
+  await assert.rejects(
+    () => f.service.submit(second),
+    (err) => err.code === 'JOB_QUEUE_FULL',
+  );
+  await f.service.rejectJob({ jobId: 'job_test_queue_1' });
+  assert.equal((await f.service.submit(second)).state, 'WAITING_CONFIRM');
+});
+
+test('inbox byte limit rejects new jobs', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now, maxInboxBytes: 100 });
+  const blob = path.join(f.inbox, 'blob.bin');
+  await writeFile(blob, Buffer.alloc(200));
+  const blocked = await makeEnvelope({
+    secret: f.otpSecret,
+    workspace: f.workspace,
+    now,
+    jobId: 'job_test_disk_full',
+    seq: 1,
+  });
+  await assert.rejects(
+    () => f.service.submit(blocked),
+    (err) => err.code === 'JOB_DISK_FULL',
+  );
+  await rm(blob);
+  assert.equal((await f.service.submit(blocked)).state, 'WAITING_CONFIRM');
 });
