@@ -45,6 +45,21 @@ function safeEntryParts(raw) {
   return { parts, directory };
 }
 
+function readEntryData(buffer, dataStart, compressedSize, uncompressedSize, method) {
+  if (method === 0) {
+    if (compressedSize !== uncompressedSize) return null;
+    return buffer.subarray(dataStart, dataStart + compressedSize);
+  }
+  try {
+    const data = inflateRawSync(buffer.subarray(dataStart, dataStart + compressedSize), {
+      maxOutputLength: uncompressedSize + 1,
+    });
+    return data.length === uncompressedSize ? data : null;
+  } catch {
+    return null;
+  }
+}
+
 function scanDirectory(buffer, options, state, depth) {
   const eocd = findEocd(buffer);
   if (eocd < 0) return fail('invalid', 'zip is corrupt');
@@ -161,22 +176,33 @@ function scanDirectory(buffer, options, state, depth) {
     const dataStart = localNameEnd + localExtraLength;
     if (dataStart + compressedSize > buffer.length) return fail('invalid', 'zip is corrupt');
 
-    if (extension === '.zip') {
-      const data = buffer.subarray(dataStart, dataStart + compressedSize);
-      let nested;
-      if (method === 0) {
-        if (compressedSize !== uncompressedSize) return fail('invalid', 'zip is corrupt');
-        nested = data;
-      } else {
-        try {
-          nested = inflateRawSync(data, { maxOutputLength: uncompressedSize + 1 });
-        } catch {
-          return fail('invalid', 'zip is corrupt');
-        }
-        if (nested.length !== uncompressedSize) return fail('invalid', 'zip is corrupt');
+    let inspectMatch = false;
+    if (options.inspect) {
+      options.inspect.pattern.lastIndex = 0;
+      inspectMatch = options.inspect.pattern.test(name);
+    }
+    if (extension === '.zip' || inspectMatch) {
+      if (inspectMatch && uncompressedSize > options.inspect.maxBytes) {
+        return fail('too_large', 'zip entry is too large to inspect');
       }
-      const result = scanDirectory(nested, options, state, depth + 1);
-      if (!result.ok) return result;
+      const data = readEntryData(
+        buffer,
+        dataStart,
+        compressedSize,
+        uncompressedSize,
+        method,
+      );
+      if (!data) return fail('invalid', 'zip is corrupt');
+      if (inspectMatch) {
+        const result = options.inspect.check(name, data);
+        if (result && result.ok === false) {
+          return fail('unsafe', result.error || 'zip entry is not allowed');
+        }
+      }
+      if (extension === '.zip') {
+        const result = scanDirectory(data, options, state, depth + 1);
+        if (!result.ok) return result;
+      }
     }
 
     offset = next;
@@ -196,6 +222,16 @@ export function scanZip(buffer, options = {}) {
       forbiddenPatterns: Array.isArray(options.forbiddenPatterns)
         ? options.forbiddenPatterns.filter((pattern) => pattern instanceof RegExp)
         : [],
+      inspect:
+        options.inspect &&
+        options.inspect.pattern instanceof RegExp &&
+        typeof options.inspect.check === 'function'
+          ? {
+              pattern: options.inspect.pattern,
+              check: options.inspect.check,
+              maxBytes: options.inspect.maxBytes ?? 1024 * 1024,
+            }
+          : null,
       maxEntries: options.maxEntries ?? 1000,
       maxBytes: options.maxBytes ?? 200 * 1024 * 1024,
       maxDepth: options.maxDepth ?? 2,

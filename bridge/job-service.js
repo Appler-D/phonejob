@@ -141,10 +141,28 @@ function officeRejection(result) {
   return jobError('JOB_OFFICE_UNSAFE');
 }
 
+function officeRelsCheck(name, data) {
+  const text = data.toString('utf8');
+  const relationships = text.match(/<Relationship\b[^>]*>/gi) ?? [];
+  for (const relationship of relationships) {
+    const externalMode = /TargetMode\s*=\s*["']External["']/i.test(relationship);
+    const externalTarget = /Target\s*=\s*["']https?:\/\//i.test(relationship);
+    if (!externalMode && !externalTarget) continue;
+    if (/Type\s*=\s*["'][^"']*\/hyperlink["']/i.test(relationship)) continue;
+    return { ok: false, error: 'office external relationship is not allowed' };
+  }
+  return { ok: true };
+}
+
 function scanOffice(buffer) {
   return scanZip(buffer, {
     allowedExtensions: null,
     forbiddenPatterns: OFFICE_FORBIDDEN_PATTERNS,
+    inspect: {
+      pattern: /\.rels$/i,
+      maxBytes: 1024 * 1024,
+      check: officeRelsCheck,
+    },
     maxEntries: 5000,
     maxBytes: 300 * 1024 * 1024,
   });

@@ -1129,7 +1129,13 @@ test('office uploads are scanned for macros and embeddings', async (t) => {
   );
   assert.equal((await f.service.getJob(jobId)).state, 'UPLOADING');
 
-  const safe = storedZip([{ name: 'word/document.xml', data: '<document/>' }]);
+  const safe = storedZip([
+    { name: 'word/document.xml', data: '<document/>' },
+    {
+      name: 'word/_rels/document.xml.rels',
+      data: '<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>',
+    },
+  ]);
   const safeSha = createHash('sha256').update(safe).digest('base64url');
   const safeJob = 'job_test_office_safe';
   await f.service.submit(
@@ -1163,6 +1169,47 @@ test('office uploads are scanned for macros and embeddings', async (t) => {
       })
     ).state,
     'WAITING_CONFIRM',
+  );
+
+  const external = storedZip([
+    { name: 'word/document.xml', data: '<document/>' },
+    {
+      name: 'word/_rels/document.xml.rels',
+      data: '<Relationships><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://evil.example/template.dotm" TargetMode="External"/></Relationships>',
+    },
+  ]);
+  const externalSha = createHash('sha256').update(external).digest('base64url');
+  const externalJob = 'job_test_office_external';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: externalJob,
+      seq: 3,
+      files: [{ name: 'report.docx', size: external.length, sha256: externalSha }],
+    }),
+  );
+  const externalProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: externalJob, ts }),
+  );
+  const externalChunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId: externalJob, fileIndex: 0, fileSha256: externalSha, chunkIndex: 0, totalChunks: 1 },
+    external,
+  );
+  await assert.rejects(
+    () =>
+      f.service.uploadChunk({
+        jobId: externalJob,
+        fileIndex: 0,
+        envelope: externalChunk,
+        deviceId: DEVICE_ID,
+        ts,
+        proof: externalProof,
+      }),
+    (err) => err.code === 'JOB_OFFICE_UNSAFE',
   );
 });
 

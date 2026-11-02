@@ -1075,7 +1075,7 @@ async function sendJob() {
                 : err.message === 'JOB_DISK_FULL'
                   ? '电脑收件箱空间不足，请清理后再试'
                   : err.message === 'JOB_OFFICE_UNSAFE'
-                    ? 'Office 文件包含宏或嵌入对象，已拒绝'
+                    ? 'Office 文件包含宏或危险外部关系，已拒绝'
                     : err.message === 'JOB_OFFICE_INVALID'
                       ? 'Office 文件结构无效，已拒绝'
                       : err.message === 'JOB_OFFICE_TOO_LARGE'
