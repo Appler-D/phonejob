@@ -449,17 +449,27 @@ export class JobService {
   }
 
   async getForDevice({ jobId, deviceId, ts, proof }) {
-    await this.#verifyDevice({ jobId, deviceId, ts, proof, type: 'job-status-v1' });
+    const device = await this.#verifyDevice({ jobId, deviceId, ts, proof, type: 'job-status-v1' });
     const job = await this.jobStore.getJob(jobId);
     if (!job || job.device_id !== deviceId) throw jobError('JOB_NOT_FOUND');
-    return {
-      job_id: job.job_id,
-      state: job.state,
-      challenge: job.challenge,
-      job_hash: job.job_hash,
-      risk: job.risk,
-      error: job.result_error ?? null,
-    };
+    return sealEnvelope(
+      device.keys.kEnc,
+      {
+        v: 1,
+        type: 'job-status-v1',
+        job_id: job.job_id,
+        device_id: deviceId,
+        request_ts: ts,
+      },
+      JSON.stringify({
+        job_id: job.job_id,
+        state: job.state,
+        challenge: job.challenge,
+        job_hash: job.job_hash,
+        risk: job.risk,
+        error: job.result_error ?? null,
+      }),
+    );
   }
 
   async uploadChunk({ jobId, fileIndex, envelope, deviceId, ts, proof }) {

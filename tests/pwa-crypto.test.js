@@ -182,6 +182,30 @@ test('PWA opens a result envelope sealed by the bridge', async () => {
   assert.deepEqual(Array.from(openedFile.plaintext), Array.from(fileBytes));
   assert.equal(openedFile.header.type, 'job-result-file-v1');
   assert.equal(openedFile.header.file_index, 0);
+
+  const statusHeader = {
+    v: 1,
+    type: 'job-status-v1',
+    job_id: 'job_test_result',
+    device_id: 'dev_test_device_1',
+    request_ts: 123,
+  };
+  const status = {
+    job_id: 'job_test_result',
+    state: 'WAITING_CONFIRM',
+    challenge: '123456',
+    job_hash: 'hash-value',
+    risk: 'low',
+    error: null,
+  };
+  const sealedStatus = await bridge.sealEnvelope(
+    pcKeys.kEnc,
+    statusHeader,
+    JSON.stringify(status),
+  );
+  const openedStatus = await pwa.openEnvelope(aesKey, sealedStatus);
+  assert.equal(openedStatus.header.request_ts, 123);
+  assert.deepEqual(JSON.parse(Buffer.from(openedStatus.plaintext).toString('utf8')), status);
 });
 
 test('PWA opens an OTP refresh envelope', async () => {

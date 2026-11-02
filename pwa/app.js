@@ -397,7 +397,17 @@ async function fetchJobStatus(jobId) {
   );
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
-  return body;
+  const opened = await openEnvelope(deviceKeys.enc, body);
+  const header = opened.header;
+  if (
+    header.type !== 'job-status-v1' ||
+    header.job_id !== jobId ||
+    header.device_id !== currentDevice.device_id ||
+    header.request_ts !== ts
+  ) {
+    throw new Error('状态信封不匹配');
+  }
+  return JSON.parse(new TextDecoder().decode(opened.plaintext));
 }
 
 async function fetchJobResult(jobId) {

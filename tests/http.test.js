@@ -63,6 +63,13 @@ function parse(response) {
   return JSON.parse(response.body);
 }
 
+async function readStatusResponse(response, kEnc, ts) {
+  const opened = await openEnvelope(kEnc, parse(response));
+  assert.equal(opened.header.type, 'job-status-v1');
+  assert.equal(opened.header.request_ts, ts);
+  return JSON.parse(Buffer.from(opened.plaintext).toString('utf8'));
+}
+
 async function setup(t, { pwaOrigin = null } = {}) {
   const otpSecret = generateOtpSecret();
   const loadOtp = async () => ({ secret: otpSecret, keyId: 'key-test' });
@@ -289,7 +296,7 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
     },
   });
   assert.equal(phoneStatus.status, 200, phoneStatus.body);
-  const jobStatusBody = parse(phoneStatus);
+  const jobStatusBody = await readStatusResponse(phoneStatus, phone.keys.kEnc, statusTs);
   assert.equal(jobStatusBody.state, 'WAITING_CONFIRM');
   assert.match(jobStatusBody.challenge, /^\d{6}$/);
   assert.ok(jobStatusBody.job_hash);
@@ -349,7 +356,8 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
     },
   });
   assert.equal(statusAfter.status, 200);
-  assert.equal(parse(statusAfter).state, 'QUEUED');
+  const afterStatus = await readStatusResponse(statusAfter, phone.keys.kEnc, statusTs);
+  assert.equal(afterStatus.state, 'QUEUED');
 
   const resultDir = path.join(inboxDir, 'done', jobId);
   await mkdir(path.join(resultDir, 'files'), { recursive: true });
@@ -379,7 +387,8 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
     },
   });
   assert.equal(finalStatus.status, 200);
-  assert.equal(parse(finalStatus).state, 'DONE');
+  const finalStatusBody = await readStatusResponse(finalStatus, phone.keys.kEnc, statusTs);
+  assert.equal(finalStatusBody.state, 'DONE');
 
   const resultTs = Math.floor(Date.now() / 1000);
   const resultProof = await hmacSha256Base64Url(

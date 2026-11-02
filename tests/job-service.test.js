@@ -98,6 +98,16 @@ async function writeResultFile(inbox, jobId, index, bytes, name = `answer-${inde
   };
 }
 
+async function readStatus(service, { jobId, deviceId, ts, proof }) {
+  const sealed = await service.getForDevice({ jobId, deviceId, ts, proof });
+  const opened = await openEnvelope(KEYS.kEnc, sealed);
+  assert.equal(opened.header.type, 'job-status-v1');
+  assert.equal(opened.header.job_id, jobId);
+  assert.equal(opened.header.device_id, deviceId);
+  assert.equal(opened.header.request_ts, ts);
+  return JSON.parse(Buffer.from(opened.plaintext).toString('utf8'));
+}
+
 async function makeEnvelope({
   secret,
   workspace,
@@ -335,7 +345,12 @@ test('device status requires a signed request', async (t) => {
   const ts = Math.floor(now / 1000);
   const message = canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts });
   const proof = await hmacSha256Base64Url(KEYS.kAuth, message);
-  const status = await f.service.getForDevice({ jobId, deviceId: DEVICE_ID, ts, proof });
+  const status = await readStatus(f.service, {
+    jobId,
+    deviceId: DEVICE_ID,
+    ts,
+    proof,
+  });
   assert.equal(status.state, 'WAITING_CONFIRM');
   assert.match(status.challenge, /^\d{6}$/);
   assert.equal(typeof status.job_hash, 'string');
@@ -402,7 +417,7 @@ test('scanResults completes a job and the result is sealed for the phone', async
     KEYS.kAuth,
     canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
   );
-  const status = await f.service.getForDevice({
+  const status = await readStatus(f.service, {
     jobId,
     deviceId: DEVICE_ID,
     ts,
@@ -1242,7 +1257,7 @@ test('retention expires old results and prunes inbox directories', async (t) => 
     KEYS.kAuth,
     canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
   );
-  const status = await f.service.getForDevice({
+  const status = await readStatus(f.service, {
     jobId,
     deviceId: DEVICE_ID,
     ts,
