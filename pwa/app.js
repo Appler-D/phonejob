@@ -64,6 +64,8 @@ const jobResponseEl = document.getElementById('job-response');
 const jobStateEl = document.getElementById('job-state');
 const jobResultEl = document.getElementById('job-result');
 const jobResultFilesEl = document.getElementById('job-result-files');
+const pushButton = document.getElementById('push-button');
+const pushStatusEl = document.getElementById('push-status');
 
 const CHUNK_SIZE = 512 * 1024;
 
@@ -94,6 +96,11 @@ function setJobError(text) {
 function setOutboxStatus(text) {
   outboxStatusEl.textContent = text;
   outboxStatusEl.hidden = !text;
+}
+
+function setPushStatus(text) {
+  pushStatusEl.textContent = text;
+  pushStatusEl.hidden = !text;
 }
 
 function formatBytes(value) {
@@ -161,6 +168,10 @@ function showTotp(device, key) {
   totpTimer = setInterval(renderTotp, 1000);
   void refreshOtpKey();
   startOutbox();
+  if (pushSupported()) {
+    pushButton.hidden = false;
+    if (Notification.permission === 'granted') void ensurePushSubscription(false);
+  }
   if (device.last_job_id) {
     watchJob(device.last_job_id);
   } else {
@@ -183,6 +194,8 @@ function showPair() {
   jobFiles.value = '';
   renderSelectedFiles([]);
   hideJobWatch();
+  pushButton.hidden = true;
+  setPushStatus('');
 }
 
 function parsePayload(raw) {
@@ -381,6 +394,83 @@ async function refreshOtpKey() {
   } catch (err) {
     if (err instanceof TypeError) return false;
     setError(err.message);
+    return false;
+  }
+}
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+async function ensurePushSubscription(interactive) {
+  if (!currentDevice) return false;
+  if (!pushSupported()) {
+    setPushStatus('当前浏览器不支持 Web Push');
+    return false;
+  }
+  try {
+    let permission = Notification.permission;
+    if (permission === 'default') {
+      if (!interactive) return false;
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== 'granted') {
+      if (interactive) setPushStatus('通知权限未授予');
+      return false;
+    }
+    const registration = await navigator.serviceWorker.register('./sw.js');
+    await navigator.serviceWorker.ready;
+    const health = await fetch(`${currentDevice.bridge_url}/api/health`);
+    const info = await health.json().catch(() => null);
+    if (!health.ok || typeof info?.vapid_public_key !== 'string') {
+      throw new Error('服务器未启用通知');
+    }
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const currentKey = subscription.options?.applicationServerKey;
+      if (
+        currentKey &&
+        toBase64Url(new Uint8Array(currentKey)) !== info.vapid_public_key
+      ) {
+        await subscription.unsubscribe();
+        subscription = null;
+      }
+    }
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: fromBase64Url(info.vapid_public_key),
+      });
+    }
+    const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+    if (!deviceKeys) throw new Error('设备密钥缺失，请重新配对');
+    const ts = Math.floor(Date.now() / 1000);
+    const proof = toBase64Url(
+      await hmacWithKey(
+        deviceKeys.auth,
+        canonicalJson({
+          type: 'push-subscribe-v1',
+          device_id: currentDevice.device_id,
+          ts,
+        }),
+      ),
+    );
+    const response = await fetch(`${currentDevice.bridge_url}/api/device/push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_id: currentDevice.device_id,
+        ts,
+        proof,
+        subscription: subscription.toJSON(),
+      }),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`);
+    setPushStatus('已启用完成通知');
+    return true;
+  } catch (err) {
+    setPushStatus(err instanceof TypeError ? '无法连接 bridge' : err.message);
     return false;
   }
 }
@@ -996,6 +1086,9 @@ async function init() {
 pairButton.addEventListener('click', startPairing);
 jobFiles.addEventListener('change', () => renderSelectedFiles([...jobFiles.files]));
 jobSend.addEventListener('click', sendJob);
+pushButton.addEventListener('click', () => {
+  void ensurePushSubscription(true);
+});
 rePairButton.addEventListener('click', async () => {
   if (currentDevice) {
     try {

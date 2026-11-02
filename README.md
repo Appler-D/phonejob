@@ -19,7 +19,9 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/totp.js`：RFC 4226 / RFC 6238 HOTP/TOTP，支持 ±1 步验证
 - `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/pairing.js`：start → claim（SAS 证明）→ 本地确认 SAS → `K_otp` 下发 → 设备登记/吊销；吊销会轮换 `K_otp`，剩余设备通过签名刷新接口取新码；配对/刷新/轮换写审计
-- `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob；内存 store 供测试
+- `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob + Web Push 订阅；内存 store 供测试
+- `bridge/vapid-store.js`：DPAPI 保护 VAPID P-256 公私钥（`vapid.bin`）
+- `bridge/push.js` / `bridge/push-service.js`：RFC 8291 `aes128gcm` 负载加密、VAPID JWT 签名、推送投递与 404/410 订阅清理
 - `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、OTP/挑战码失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询（状态响应用 `K_enc` 加密并绑定请求 ts）、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时、结果与收件箱保留清理
 - `bridge/zip-scan.js`：`zip` 内部路径、类型、加密、嵌套深度、条目数与解压大小检查；结果文件同样扫描
 - `bridge/confirm.js`：HMAC-SHA256 + Base32 的 8 位确认码（绑定 `job_hash` 与挑战码）
@@ -27,21 +29,22 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/crypto.js`：新增文件分片 AES-GCM 的 `sealFileChunk` / `openFileChunk`
 - `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留；challenge/job_hash/decided_at）
 - `bridge/audit.js`：配对/任务事件写 `audit.jsonl`；字段白名单（job/pairing/device/state/risk/intent/文件数/字节/错误），不记录正文、路径、挑战码、job_hash、SAS、公钥或密钥；按 5MB 轮转、保留 4 份备份、启动时清理 90 天前条目
-- `bridge/servers.js`：API 端口放 `health/claim/provision/device/otp/job`、带设备签名的 `GET /api/job/:id|result|result/file/:idx` 与 `PUT /api/job/:id/file/:idx`；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
+- `bridge/servers.js`：API 端口放 `health/claim/provision/device/otp/device/push/job`、带设备签名的 `GET /api/job/:id|result|result/file/:idx` 与 `PUT /api/job/:id/file/:idx`；`health` 返回 VAPID 公钥；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
 - `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）；任务页显示被锁定设备的可疑活动提示
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite，每秒扫描 `done/` 结果、每 30 秒处理超时、每 30 分钟清理过期结果，任务状态写入 `audit.jsonl`
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
 - `pwa/store.js`：IndexedDB 保存设备元数据、TOTP 密钥、不可导出的 `kEnc/kConfirm/kAuth`，以及加密的待发送队列
-- `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；启动/发送前用签名刷新接口获取轮换后的 `K_otp`；发送任务表单（工作区从二维码预填、seq 持久化、可选附件分片上传）；网络失败时文本任务加密进入 IndexedDB 队列并按指数退避重试（最长 10 分钟，附件任务暂不排队）；轮询并解密状态、显示挑战码/响应码；结果返回后解密显示并下载结果文件
+- `pwa/app.js` / `pwa/index.html`：配对 → 显示 SAS → TOTP；启动/发送前用签名刷新接口获取轮换后的 `K_otp`；发送任务表单（工作区从二维码预填、seq 持久化、可选附件分片上传）；网络失败时文本任务加密进入 IndexedDB 队列并按指数退避重试（最长 10 分钟，附件任务暂不排队）；可启用 Web Push 完成通知；轮询并解密状态、显示挑战码/响应码；结果返回后解密显示并下载结果文件
+- `pwa/sw.js`：接收推送并显示通知，点击通知回到 PWA
 - `pwa/outbox.js`：离线队列退避与过期判断
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；85 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期逻辑已用单元/HTTP 测试覆盖；离线队列尚未在浏览器断网场景实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；90 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册已用单元/HTTP 测试覆盖；真实推送服务、离线队列断网场景和 iOS 推送尚未实测
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
-- 下一步：在桌面版安装插件并跑一条真实模型任务；Service Worker/Web Push、iOS Safari 实测
+- 下一步：在桌面版安装插件并跑一条真实模型任务；配置稳定 HTTPS PWA origin 与真实推送服务实测 Web Push；iOS Safari 实测
 
 ```bash
 npm install
@@ -67,6 +70,8 @@ node bridge/index.js
 限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 或挑战码连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态存 SQLite，bridge 重启后仍保留；本地 `/jobs` 页会显示锁定设备。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
+
+Web Push 需要 HTTPS 的 PWA origin（或 localhost 调试）和可访问的推送服务；VAPID 私钥由 DPAPI 保存到 `%DSH_HOME%\phonejob\vapid.bin`，可用 `PHONEJOB_VAPID_SUBJECT` 设置 VAPID 联系人（默认 `mailto:phonejob@localhost`）。
 
 配对流程：打开 `http://127.0.0.1:7789/` → 确认 Bridge URL（本机 `http://127.0.0.1:7788`）→ 生成二维码 → 手机扫描打开 PWA → 在电脑上打开确认页核对 SAS。二维码需要配置 `PHONEJOB_PWA_ORIGIN`；未配置时仍可用 PWA 手动粘贴配对信息。二维码会带上 `PHONEJOB_WORKSPACES`，PWA 发送任务时自动预填工作区。
 

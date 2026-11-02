@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createECDH, createHash, randomBytes } from 'node:crypto';
 import http from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -95,6 +95,7 @@ async function setup(t, { pwaOrigin = null } = {}) {
     version: 'test',
     pwaOrigin,
     workspaces: [workspace],
+    vapidPublicKey: 'test-vapid-key',
   });
   await servers.start();
   t.after(() => servers.close());
@@ -155,7 +156,7 @@ async function claimPhone(api, start) {
 }
 
 test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
-  const { api, local, jobs, otpSecret, inboxDir, workspace } = await setup(t);
+  const { api, local, jobs, pairing, otpSecret, inboxDir, workspace } = await setup(t);
 
   const healthBefore = await request(api, '/api/health');
   assert.equal(healthBefore.status, 200);
@@ -229,6 +230,39 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   assert.equal(refreshPayload.type, 'otp-refresh-v1');
   assert.equal(refreshPayload.device_id, phone.claim.device_id);
   assert.equal(Buffer.from(refreshPayload.k_otp, 'base64url').equals(otpSecret), true);
+
+  const ua = createECDH('prime256v1');
+  ua.generateKeys();
+  const pushTs = Math.floor(Date.now() / 1000);
+  const pushProof = await hmacSha256Base64Url(
+    phone.keys.kAuth,
+    canonicalJson({
+      type: 'push-subscribe-v1',
+      device_id: phone.claim.device_id,
+      ts: pushTs,
+    }),
+  );
+  const pushResponse = await request(api, '/api/device/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      device_id: phone.claim.device_id,
+      ts: pushTs,
+      proof: pushProof,
+      subscription: {
+        endpoint: 'https://push.example/sub/1',
+        keys: {
+          p256dh: ua.getPublicKey().toString('base64url'),
+          auth: randomBytes(16).toString('base64url'),
+        },
+      },
+    }),
+  });
+  assert.equal(pushResponse.status, 200, pushResponse.body);
+  assert.equal(
+    (await pairing.deviceStore.getPushSubscription(phone.claim.device_id)).endpoint,
+    'https://push.example/sub/1',
+  );
 
   const jobNow = Date.now();
   const jobId = 'job_http_1';
@@ -455,6 +489,7 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
 
   const healthAfter = await request(api, '/api/health');
   assert.equal(parse(healthAfter).paired_devices, 1);
+  assert.equal(parse(healthAfter).vapid_public_key, 'test-vapid-key');
 
   const devices = await request(local, '/api/devices', {
     headers: { 'X-PhoneJob-Admin': 'test-admin' },

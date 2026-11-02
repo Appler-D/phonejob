@@ -29,7 +29,16 @@ test('MemoryDeviceStore stores, lists, reads, and revokes devices', async () => 
   const device = await store.getDevice('dev_a');
   assert.equal(device.phonePub, 'pub');
   assert.equal(device.keys.kEnc.equals(KEYS.kEnc), true);
+  await store.savePushSubscription({
+    deviceId: 'dev_a',
+    endpoint: 'https://push.example/a',
+    p256dh: 'p256dh',
+    auth: 'auth',
+    updatedAt: 1,
+  });
+  assert.equal((await store.getPushSubscription('dev_a')).endpoint, 'https://push.example/a');
   assert.equal(await store.revokeDevice('dev_a'), true);
+  assert.equal(await store.getPushSubscription('dev_a'), null);
   assert.equal((await store.listDevices())[0].revoked, true);
   assert.equal(await store.revokeDevice('dev_missing'), false);
   await store.close();
@@ -54,6 +63,13 @@ test('SqliteDeviceStore persists metadata and DPAPI-protected keys', { skip: !WI
   ]);
   const before = await store.getDevice('dev_a');
   assert.equal(before.keys.kEnc.equals(KEYS.kEnc), true);
+  await store.savePushSubscription({
+    deviceId: 'dev_a',
+    endpoint: 'https://push.example/a',
+    p256dh: 'p256dh',
+    auth: 'auth',
+    updatedAt: 1,
+  });
   await store.close();
 
   const reopened = new SqliteDeviceStore({ filePath: file });
@@ -61,7 +77,9 @@ test('SqliteDeviceStore persists metadata and DPAPI-protected keys', { skip: !WI
   assert.equal(after.keys.kEnc.equals(KEYS.kEnc), true);
   assert.equal(after.keys.kConfirm.equals(KEYS.kConfirm), true);
   assert.equal(after.keys.kAuth.equals(KEYS.kAuth), true);
+  assert.equal((await reopened.getPushSubscription('dev_a')).endpoint, 'https://push.example/a');
   assert.equal(await reopened.revokeDevice('dev_a'), true);
+  assert.equal(await reopened.getPushSubscription('dev_a'), null);
   assert.equal((await reopened.listDevices())[0].revoked, true);
   await reopened.close();
 

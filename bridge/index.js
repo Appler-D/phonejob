@@ -10,6 +10,8 @@ import { SqliteDeviceStore } from './device-store.js';
 import { SqliteJobStore } from './job-store.js';
 import { JobService } from './job-service.js';
 import { AuditLog } from './audit.js';
+import { loadOrCreateVapidStore } from './vapid-store.js';
+import { PushService } from './push-service.js';
 
 const VERSION = '0.1.0';
 const stateDir = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -80,14 +82,21 @@ const adminToken = process.env.PHONEJOB_ADMIN_TOKEN || randomBytes(24).toString(
 const tokenPath = path.join(path.dirname(keysPath), 'admin.token');
 const dbPath = path.join(path.dirname(keysPath), 'phonejob.sqlite');
 const auditPath = path.join(path.dirname(keysPath), 'audit.jsonl');
+const vapidPath = path.join(path.dirname(keysPath), 'vapid.bin');
 await mkdir(path.dirname(keysPath), { recursive: true });
 await loadOtp();
+const vapid = await loadOrCreateVapidStore(vapidPath);
 await writeFile(tokenPath, `${adminToken}\n`, { mode: 0o600 });
 
 const audit = new AuditLog({ filePath: auditPath });
 await audit.prune();
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
 const jobStore = new SqliteJobStore({ filePath: dbPath });
+const push = new PushService({
+  deviceStore,
+  vapid,
+  subject: process.env.PHONEJOB_VAPID_SUBJECT || undefined,
+});
 const pairing = new PairingService({ loadOtp, deviceStore, rotateOtp, audit });
 const jobs = new JobService({
   deviceStore,
@@ -101,6 +110,7 @@ const jobs = new JobService({
   resultTtlMs,
   maxJobsPerHour,
   audit,
+  notify: (event) => push.notify(event),
 });
 const servers = createBridgeServers({
   pairing,
@@ -111,6 +121,7 @@ const servers = createBridgeServers({
   version: VERSION,
   pwaOrigin: process.env.PHONEJOB_PWA_ORIGIN || null,
   workspaces: workspaceAllowlist,
+  vapidPublicKey: vapid.publicKey,
 });
 
 let resultTimer = null;

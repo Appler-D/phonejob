@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createECDH, randomBytes } from 'node:crypto';
 import { PairingService } from '../bridge/pairing.js';
 import {
   canonicalJson,
@@ -286,4 +287,51 @@ test('a device can refresh the current OTP envelope', async () => {
     () => fixture.service.refreshOtp({ deviceId, ts, proof }),
     (err) => err.code === 'DEVICE_NOT_FOUND',
   );
+});
+
+test('a device can register and clear a push subscription', async () => {
+  const fixture = await claimedFixture();
+  fixture.service.confirmPairing({ pairId: fixture.start.pair_id, sas: fixture.sas });
+  await fixture.service.provisionOtp({
+    pairId: fixture.start.pair_id,
+    deviceId: fixture.claim.device_id,
+    proof: await provisionProof(fixture),
+  });
+  const deviceId = fixture.claim.device_id;
+  const ua = createECDH('prime256v1');
+  ua.generateKeys();
+  const subscription = {
+    endpoint: 'https://push.example/sub/1',
+    keys: {
+      p256dh: ua.getPublicKey().toString('base64url'),
+      auth: randomBytes(16).toString('base64url'),
+    },
+  };
+  const ts = Math.floor(fixture.service.now() / 1000);
+  const proof = await hmacSha256Base64Url(
+    fixture.keys.kAuth,
+    canonicalJson({ type: 'push-subscribe-v1', device_id: deviceId, ts }),
+  );
+  assert.equal(
+    (await fixture.service.registerPush({ deviceId, ts, proof, subscription })).ok,
+    true,
+  );
+  const stored = await fixture.service.deviceStore.getPushSubscription(deviceId);
+  assert.equal(stored.endpoint, subscription.endpoint);
+  await assert.rejects(
+    () => fixture.service.registerPush({ deviceId, ts, proof: 'bad', subscription }),
+    (err) => err.code === 'DEVICE_AUTH',
+  );
+  await assert.rejects(
+    () =>
+      fixture.service.registerPush({
+        deviceId,
+        ts,
+        proof,
+        subscription: { ...subscription, endpoint: 'http://insecure.example' },
+      }),
+    (err) => err.code === 'PUSH_SUBSCRIPTION_INVALID',
+  );
+  await fixture.service.revokeDevice(deviceId);
+  assert.equal(await fixture.service.deviceStore.getPushSubscription(deviceId), null);
 });

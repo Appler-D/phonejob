@@ -33,6 +33,7 @@ const ERROR_STATUS = {
   DEVICE_NOT_FOUND: 404,
   DEVICE_AUTH: 401,
   OTP_ROTATE_FAILED: 500,
+  PUSH_SUBSCRIPTION_INVALID: 400,
   JOB_INVALID: 400,
   JOB_DEVICE_REJECTED: 404,
   JOB_TIME_WINDOW: 400,
@@ -222,6 +223,7 @@ export function createBridgeServers({
   version = '0.1.0',
   pwaOrigin = null,
   workspaces = [],
+  vapidPublicKey = null,
 } = {}) {
   if (!pairing) throw new TypeError('pairing is required');
 
@@ -279,6 +281,7 @@ export function createBridgeServers({
             ok: true,
             version,
             paired_devices: devices.filter((device) => !device.revoked).length,
+            vapid_public_key: vapidPublicKey,
           },
           corsHeaders(req),
         );
@@ -317,6 +320,17 @@ export function createBridgeServers({
           deviceId: req.headers['x-phonejob-device'],
           ts: Number(req.headers['x-phonejob-ts']),
           proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/device/push') {
+        const body = await readJson(req, 64 * 1024);
+        const result = await pairing.registerPush({
+          deviceId: body.device_id,
+          ts: body.ts,
+          proof: body.proof,
+          subscription: body.subscription,
         });
         sendJson(res, 200, result, corsHeaders(req));
         return;

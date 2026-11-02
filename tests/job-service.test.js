@@ -37,6 +37,7 @@ async function setup(
     resultTtlMs,
     maxJobsPerHour,
     audit,
+    notify,
   } = {},
 ) {
   const inbox = await mkdtemp(path.join(os.tmpdir(), 'phonejob-inbox-'));
@@ -67,6 +68,7 @@ async function setup(
     resultTtlMs,
     maxJobsPerHour,
     audit,
+    notify,
   });
   return { service, jobStore, deviceStore, inbox, workspace, otpSecret };
 }
@@ -1294,4 +1296,41 @@ test('retention expires old results and prunes inbox directories', async (t) => 
   assert.equal((await f.service.getJob(rejectedId)).state, 'REJECTED');
   await assert.rejects(() => readFile(path.join(f.inbox, 'rejected', rejectedId, 'job.json')));
   assert.deepEqual(await f.service.scanRetention(), []);
+});
+
+test('job transitions call the notifier', async (t) => {
+  const now = 1_761_900_000_000;
+  const events = [];
+  const f = await setup(t, {
+    now: () => now,
+    notify: (event) => {
+      events.push(event);
+    },
+  });
+  const jobId = 'job_test_notify';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+    }),
+  );
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  await writeResult(f.inbox, jobId, { text: 'done' });
+  await f.service.scanResults();
+
+  assert.deepEqual(
+    events.map((event) => event.state),
+    ['QUEUED', 'DONE'],
+  );
+  for (const event of events) {
+    assert.equal(event.deviceId, DEVICE_ID);
+    assert.equal(event.jobId, jobId);
+  }
 });

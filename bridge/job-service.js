@@ -147,6 +147,7 @@ export class JobService {
     resultTtlMs = DEFAULT_RESULT_TTL_MS,
     maxJobsPerHour = DEFAULT_MAX_JOBS_PER_HOUR,
     audit = null,
+    notify = null,
   } = {}) {
     if (!deviceStore || !jobStore || typeof loadOtp !== 'function' || !inboxDir) {
       throw new TypeError('deviceStore, jobStore, loadOtp, and inboxDir are required');
@@ -163,6 +164,7 @@ export class JobService {
     this.resultTtlMs = resultTtlMs;
     this.maxJobsPerHour = maxJobsPerHour;
     this.audit = audit;
+    this.notify = notify;
     this.scanning = false;
     this.timeoutScanning = false;
     this.retentionScanning = false;
@@ -177,6 +179,13 @@ export class JobService {
       intent: job?.intent,
       ...extra,
     });
+  }
+
+  #notify(job, state, error = null) {
+    if (!this.notify) return;
+    Promise.resolve(
+      this.notify({ deviceId: job.device_id, jobId: job.job_id, state, error }),
+    ).catch(() => {});
   }
 
   async #checkDeviceLock(deviceId) {
@@ -682,6 +691,7 @@ export class JobService {
             error: check.error,
             files: Array.isArray(result.files) ? result.files.length : 0,
           });
+          this.#notify(job, 'FAILED', check.error);
           completed.push({ job_id: jobId, state: 'FAILED', error: check.error });
           continue;
         }
@@ -697,6 +707,7 @@ export class JobService {
             0,
           ),
         });
+        this.#notify(job, state, error);
         completed.push({ job_id: jobId, state, error });
       }
       return completed;
@@ -731,6 +742,7 @@ export class JobService {
             error: 'JOB_UPLOAD_TIMEOUT',
             reason: 'upload_timeout',
           });
+          this.#notify(job, 'EXPIRED', 'JOB_UPLOAD_TIMEOUT');
           expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_UPLOAD_TIMEOUT' });
           continue;
         }
@@ -763,6 +775,7 @@ export class JobService {
               error: 'JOB_CONFIRM_TIMEOUT',
               reason: 'confirm_timeout',
             });
+            this.#notify(job, 'EXPIRED', 'JOB_CONFIRM_TIMEOUT');
             expired.push({ job_id: job.job_id, state: 'EXPIRED', error: 'JOB_CONFIRM_TIMEOUT' });
           }
           continue;
@@ -782,6 +795,7 @@ export class JobService {
               state: 'FAILED',
               error: 'JOB_EXECUTION_TIMEOUT',
             });
+            this.#notify(job, 'FAILED', 'JOB_EXECUTION_TIMEOUT');
             expired.push({ job_id: job.job_id, state: 'FAILED', error: 'JOB_EXECUTION_TIMEOUT' });
           }
         }
@@ -979,6 +993,7 @@ export class JobService {
       throw jobError('JOB_NOT_WAITING');
     }
     this.#audit('job.approved', job, { state: 'QUEUED' });
+    this.#notify(job, 'QUEUED');
     return { job_id: jobId, state: 'QUEUED' };
   }
 
@@ -1007,6 +1022,7 @@ export class JobService {
       throw jobError('JOB_NOT_WAITING');
     }
     this.#audit('job.rejected', job, { state: 'REJECTED' });
+    this.#notify(job, 'REJECTED');
     return { job_id: jobId, state: 'REJECTED' };
   }
 

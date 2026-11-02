@@ -17,6 +17,7 @@ function metadata(device) {
 export class MemoryDeviceStore {
   constructor() {
     this.devices = new Map();
+    this.pushSubscriptions = new Map();
   }
 
   async saveDevice(device) {
@@ -39,7 +40,26 @@ export class MemoryDeviceStore {
     const device = this.devices.get(deviceId);
     if (!device) return false;
     device.revoked = true;
+    this.pushSubscriptions.delete(deviceId);
     return true;
+  }
+
+  async savePushSubscription({ deviceId, endpoint, p256dh, auth, updatedAt }) {
+    this.pushSubscriptions.set(deviceId, {
+      device_id: deviceId,
+      endpoint,
+      p256dh,
+      auth,
+      updated_at: updatedAt,
+    });
+  }
+
+  async getPushSubscription(deviceId) {
+    return this.pushSubscriptions.get(deviceId) ?? null;
+  }
+
+  async deletePushSubscription(deviceId) {
+    this.pushSubscriptions.delete(deviceId);
   }
 
   async close() {}
@@ -59,6 +79,13 @@ export class SqliteDeviceStore {
         key_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         revoked INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        device_id TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       )
     `);
     const version = this.db.prepare('PRAGMA user_version').get()?.user_version ?? 0;
@@ -124,7 +151,34 @@ export class SqliteDeviceStore {
 
   async revokeDevice(deviceId) {
     const result = this.db.prepare('UPDATE devices SET revoked = 1 WHERE device_id = ?').run(deviceId);
+    if (result.changes > 0) {
+      this.db.prepare('DELETE FROM push_subscriptions WHERE device_id = ?').run(deviceId);
+    }
     return result.changes > 0;
+  }
+
+  async savePushSubscription({ deviceId, endpoint, p256dh, auth, updatedAt }) {
+    this.db
+      .prepare(`
+        INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          endpoint = excluded.endpoint,
+          p256dh = excluded.p256dh,
+          auth = excluded.auth,
+          updated_at = excluded.updated_at
+      `)
+      .run(deviceId, endpoint, p256dh, auth, updatedAt);
+  }
+
+  async getPushSubscription(deviceId) {
+    return (
+      this.db.prepare('SELECT * FROM push_subscriptions WHERE device_id = ?').get(deviceId) ?? null
+    );
+  }
+
+  async deletePushSubscription(deviceId) {
+    this.db.prepare('DELETE FROM push_subscriptions WHERE device_id = ?').run(deviceId);
   }
 
   async close() {

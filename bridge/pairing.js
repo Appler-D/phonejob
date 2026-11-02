@@ -48,6 +48,31 @@ function decodePublicKey(value) {
   return new Uint8Array(raw);
 }
 
+function decodePushSubscription(subscription) {
+  if (!subscription || typeof subscription !== 'object') {
+    throw pairingError('PUSH_SUBSCRIPTION_INVALID');
+  }
+  let endpoint;
+  try {
+    endpoint = new URL(subscription.endpoint);
+  } catch {
+    throw pairingError('PUSH_SUBSCRIPTION_INVALID');
+  }
+  if (endpoint.protocol !== 'https:' || endpoint.toString().length > 2048) {
+    throw pairingError('PUSH_SUBSCRIPTION_INVALID');
+  }
+  const p256dh = Buffer.from(subscription.keys?.p256dh ?? '', 'base64url');
+  const auth = Buffer.from(subscription.keys?.auth ?? '', 'base64url');
+  if (p256dh.length !== 65 || p256dh[0] !== 0x04 || auth.length !== 16) {
+    throw pairingError('PUSH_SUBSCRIPTION_INVALID');
+  }
+  return {
+    endpoint: endpoint.toString(),
+    p256dh: subscription.keys.p256dh,
+    auth: subscription.keys.auth,
+  };
+}
+
 export class PairingService {
   constructor({
     loadOtp,
@@ -288,6 +313,32 @@ export class PairingService {
     const { secret, keyId } = await this.loadOtp();
     this.audit?.record('device.otp_refreshed', { device_id: deviceId });
     return sealOtpRefresh(device.keys.kEnc, { deviceId, keyId, otpSecret: secret });
+  }
+
+  async registerPush({ deviceId, ts, proof, subscription }) {
+    if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
+      throw pairingError('DEVICE_NOT_FOUND');
+    }
+    if (!Number.isInteger(ts) || Math.abs(this.now() / 1000 - ts) > 120) {
+      throw pairingError('DEVICE_AUTH');
+    }
+    const device = await this.deviceStore.getDevice(deviceId);
+    if (!device || device.revoked) throw pairingError('DEVICE_NOT_FOUND');
+    const expected = await hmacSha256Base64Url(
+      device.keys.kAuth,
+      canonicalJson({ type: 'push-subscribe-v1', device_id: deviceId, ts }),
+    );
+    if (!safeEqualBase64Url(proof, expected)) throw pairingError('DEVICE_AUTH');
+    const parsed = decodePushSubscription(subscription);
+    await this.deviceStore.savePushSubscription({
+      deviceId,
+      endpoint: parsed.endpoint,
+      p256dh: parsed.p256dh,
+      auth: parsed.auth,
+      updatedAt: this.now(),
+    });
+    this.audit?.record('device.push_registered', { device_id: deviceId });
+    return { ok: true };
   }
 
   async revokeDevice(deviceId) {
