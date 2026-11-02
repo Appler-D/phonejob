@@ -54,6 +54,7 @@ powershell -ExecutionPolicy Bypass -File tools/install-autostart.ps1 `
 - PWA 中点击“启用完成通知”并授予通知权限；iOS 需先“添加到主屏幕”，且系统版本支持 Web Push。
 - 插件/电脑完成后应收到 `QUEUED`/`DONE`/`FAILED`/`REJECTED`/`EXPIRED` 通知。
 - 若通知不达：检查浏览器通知权限、VAPID 公钥是否随 bridge 改变、推送服务网络。
+- 本机验证：Chrome 可授权通知，但 `pushManager.subscribe` 30 秒内未返回，说明当前网络到推送服务不可达；换用可访问推送服务的网络后再测。
 - 未实测项：真实推送服务、iOS 推送。
 
 ## 6. DSH 插件
