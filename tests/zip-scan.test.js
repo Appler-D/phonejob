@@ -93,3 +93,25 @@ test('zip limits and corrupt archives are rejected', () => {
   assert.equal(corrupt.ok, false);
   assert.equal(corrupt.reason, 'invalid');
 });
+
+test('office containers can reject macros without an extension whitelist', () => {
+  const rules = {
+    allowedExtensions: null,
+    forbiddenPatterns: [/(^|\/)vbaProject\.bin$/i, /(^|\/)embeddings\//i],
+  };
+  const safe = storedZip([
+    { name: '[Content_Types].xml', data: '<Types/>' },
+    { name: 'word/document.xml', data: '<document/>' },
+  ]);
+  assert.equal(scanZip(safe, rules).ok, true);
+  const macro = storedZip([
+    { name: 'word/document.xml', data: '<document/>' },
+    { name: 'word/vbaProject.bin', data: 'MZ' },
+  ]);
+  assert.equal(scanZip(macro, rules).ok, false);
+  const embedded = storedZip([
+    { name: 'word/document.xml', data: '<document/>' },
+    { name: 'word/embeddings/oleObject1.bin', data: 'MZ' },
+  ]);
+  assert.equal(scanZip(embedded, rules).ok, false);
+});

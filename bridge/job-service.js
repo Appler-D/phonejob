@@ -60,6 +60,15 @@ const RESERVED_NAMES = new Set([
   ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
   ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
 ]);
+const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx']);
+const OFFICE_FORBIDDEN_PATTERNS = [
+  /(^|\/)vbaProject\.bin$/i,
+  /(^|\/)vbaData\.xml$/i,
+  /(^|\/)embeddings\//i,
+  /(^|\/)activeX\//i,
+  /(^|\/)externalLinks\//i,
+  /(^|\/)macrosheets\//i,
+];
 
 function jobError(code) {
   const error = new Error(code);
@@ -124,6 +133,21 @@ function zipRejection(result) {
   if (result.reason === 'too_large') return jobError('JOB_ZIP_TOO_LARGE');
   if (result.reason === 'invalid') return jobError('JOB_ZIP_INVALID');
   return jobError('JOB_ZIP_UNSAFE');
+}
+
+function officeRejection(result) {
+  if (result.reason === 'too_large') return jobError('JOB_OFFICE_TOO_LARGE');
+  if (result.reason === 'invalid') return jobError('JOB_OFFICE_INVALID');
+  return jobError('JOB_OFFICE_UNSAFE');
+}
+
+function scanOffice(buffer) {
+  return scanZip(buffer, {
+    allowedExtensions: null,
+    forbiddenPatterns: OFFICE_FORBIDDEN_PATTERNS,
+    maxEntries: 5000,
+    maxBytes: 300 * 1024 * 1024,
+  });
 }
 
 function safeFileName(value) {
@@ -607,12 +631,16 @@ export class JobService {
       ) {
         throw jobError('JOB_FILE_HASH_MISMATCH');
       }
-      if (path.extname(item.name).toLowerCase() === '.zip') {
+      const extension = path.extname(item.name).toLowerCase();
+      if (extension === '.zip') {
         const zip = scanZip(buffer, {
           allowedExtensions: ALLOWED_EXTENSIONS,
           maxBytes: MAX_TOTAL_BYTES,
         });
         if (!zip.ok) throw zipRejection(zip);
+      } else if (OFFICE_EXTENSIONS.has(extension)) {
+        const office = scanOffice(buffer);
+        if (!office.ok) throw officeRejection(office);
       }
       const filePath = path.join(stagingDir, item.local_path);
       await mkdir(path.dirname(filePath), { recursive: true });
@@ -679,6 +707,9 @@ export class JobService {
         maxBytes: MAX_RESULT_TOTAL_BYTES * 3,
       });
       if (!zip.ok) return { ok: false, error: zip.error };
+    } else if (OFFICE_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
+      const office = scanOffice(bytes);
+      if (!office.ok) return { ok: false, error: office.error };
     }
     if (bytes.includes(secret)) return { ok: false, error: 'result file blocked: key material' };
     const scan = scanResultBytes(bytes, forbidden);

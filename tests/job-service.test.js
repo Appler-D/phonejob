@@ -917,8 +917,39 @@ test('scanResults rejects result files with bad hashes or secrets', async (t) =>
   );
   await writeResult(f.inbox, zipJob, { files: [zipMeta] });
 
+  const officeJob = 'job_test_office_result';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: officeJob,
+      seq: 4,
+    }),
+  );
+  const officeRecord = await f.service.getJob(officeJob);
+  await f.service.approveJob({
+    jobId: officeJob,
+    response: computeConfirmationResponse(
+      KEYS.kConfirm,
+      officeRecord.job_hash,
+      officeRecord.challenge,
+    ),
+  });
+  const officeMeta = await writeResultFile(
+    f.inbox,
+    officeJob,
+    0,
+    storedZip([
+      { name: 'word/document.xml', data: '<document/>' },
+      { name: 'word/vbaProject.bin', data: 'MZ' },
+    ]),
+    'report.docx',
+  );
+  await writeResult(f.inbox, officeJob, { files: [officeMeta] });
+
   const completed = await f.service.scanResults();
-  assert.equal(completed.length, 3);
+  assert.equal(completed.length, 4);
   const badHashState = await f.service.getJob(badHashJob);
   assert.equal(badHashState.state, 'FAILED');
   assert.match(badHashState.result_error, /hash/);
@@ -928,6 +959,9 @@ test('scanResults rejects result files with bad hashes or secrets', async (t) =>
   const zipState = await f.service.getJob(zipJob);
   assert.equal(zipState.state, 'FAILED');
   assert.match(zipState.result_error, /zip entry type/);
+  const officeState = await f.service.getJob(officeJob);
+  assert.equal(officeState.state, 'FAILED');
+  assert.match(officeState.result_error, /zip entry is not allowed/);
 });
 
 test('job transitions emit redacted audit events', async (t) => {
@@ -1049,6 +1083,87 @@ test('zip uploads are scanned before they reach pending', async (t) => {
     proof: safeProof,
   });
   assert.equal(uploaded.state, 'WAITING_CONFIRM');
+});
+
+test('office uploads are scanned for macros and embeddings', async (t) => {
+  const now = 1_761_900_000_000;
+  const f = await setup(t, { now: () => now });
+  const ts = Math.floor(now / 1000);
+
+  const macro = storedZip([
+    { name: 'word/document.xml', data: '<document/>' },
+    { name: 'word/vbaProject.bin', data: 'MZ' },
+  ]);
+  const macroSha = createHash('sha256').update(macro).digest('base64url');
+  const jobId = 'job_test_office_macro';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+      files: [{ name: 'report.docx', size: macro.length, sha256: macroSha }],
+    }),
+  );
+  const proof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const chunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId, fileIndex: 0, fileSha256: macroSha, chunkIndex: 0, totalChunks: 1 },
+    macro,
+  );
+  await assert.rejects(
+    () =>
+      f.service.uploadChunk({
+        jobId,
+        fileIndex: 0,
+        envelope: chunk,
+        deviceId: DEVICE_ID,
+        ts,
+        proof,
+      }),
+    (err) => err.code === 'JOB_OFFICE_UNSAFE',
+  );
+  assert.equal((await f.service.getJob(jobId)).state, 'UPLOADING');
+
+  const safe = storedZip([{ name: 'word/document.xml', data: '<document/>' }]);
+  const safeSha = createHash('sha256').update(safe).digest('base64url');
+  const safeJob = 'job_test_office_safe';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId: safeJob,
+      seq: 2,
+      files: [{ name: 'report.docx', size: safe.length, sha256: safeSha }],
+    }),
+  );
+  const safeProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-upload-v1', device_id: DEVICE_ID, job_id: safeJob, ts }),
+  );
+  const safeChunk = await sealFileChunk(
+    KEYS.kEnc,
+    { jobId: safeJob, fileIndex: 0, fileSha256: safeSha, chunkIndex: 0, totalChunks: 1 },
+    safe,
+  );
+  assert.equal(
+    (
+      await f.service.uploadChunk({
+        jobId: safeJob,
+        fileIndex: 0,
+        envelope: safeChunk,
+        deviceId: DEVICE_ID,
+        ts,
+        proof: safeProof,
+      })
+    ).state,
+    'WAITING_CONFIRM',
+  );
 });
 
 test('per-device submission rate limit resets after the window', async (t) => {

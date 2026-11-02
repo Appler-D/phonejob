@@ -104,6 +104,14 @@ function scanDirectory(buffer, options, state, depth) {
     const name = buffer.toString('utf8', offset + 46, nameEnd);
     const entry = safeEntryParts(name);
     if (!entry) return fail('unsafe', 'zip entry path is not allowed');
+    if (
+      options.forbiddenPatterns.some((pattern) => {
+        pattern.lastIndex = 0;
+        return pattern.test(name);
+      })
+    ) {
+      return fail('unsafe', 'zip entry is not allowed');
+    }
     if (((externalAttributes >>> 16) & 0xf000) === 0xa000) {
       return fail('unsafe', 'zip symlink is not allowed');
     }
@@ -117,7 +125,7 @@ function scanDirectory(buffer, options, state, depth) {
     }
 
     const extension = path.posix.extname(name).toLowerCase();
-    if (!options.allowedExtensions.has(extension)) {
+    if (options.allowedExtensions && !options.allowedExtensions.has(extension)) {
       return fail('unsafe', 'zip entry type is not allowed');
     }
     if (extension === '.zip' && depth >= options.maxDepth) {
@@ -178,13 +186,16 @@ function scanDirectory(buffer, options, state, depth) {
 }
 
 export function scanZip(buffer, options = {}) {
-  if (!(options.allowedExtensions instanceof Set)) {
-    throw new TypeError('allowedExtensions is required');
+  if (options.allowedExtensions !== null && !(options.allowedExtensions instanceof Set)) {
+    throw new TypeError('allowedExtensions must be a Set or null');
   }
   return scanDirectory(
     buffer,
     {
       allowedExtensions: options.allowedExtensions,
+      forbiddenPatterns: Array.isArray(options.forbiddenPatterns)
+        ? options.forbiddenPatterns.filter((pattern) => pattern instanceof RegExp)
+        : [],
       maxEntries: options.maxEntries ?? 1000,
       maxBytes: options.maxBytes ?? 200 * 1024 * 1024,
       maxDepth: options.maxDepth ?? 2,

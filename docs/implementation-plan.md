@@ -276,6 +276,7 @@ UPLOADING ──分片完成──▶ WAITING_CONFIRM
 
 ### 7.6 任务内容的安全
 - 文件一律视为**不可信**：DSH 侧只用工具读取，不执行；扩展名白名单（jpg/png/pdf/docx/xlsx/pptx/txt/md/zip），PE/JS/脚本类直接拒绝。
+- zip 检查内部路径、类型、加密、嵌套深度与声明解压大小；docx/xlsx/pptx 容器拒绝宏工程、嵌入对象、ActiveX 与 externalLinks 目录。
 - `text` 里禁止出现"忽略以上指令"类模板（不是硬性拦截，但在 PC 确认窗高亮提示）。
 - 结果回传前扫描：不含 `K_*`、不含 `sk-`/`ghp_` 等密钥模式，否则阻止并提示。
 - 目标限制：`target.workspace` 必须是配置里的白名单；`intent=shell` 只能落到一个受限 preset。
@@ -481,8 +482,8 @@ cloudflared tunnel run phonejob
 | 多设备 | 最多 5 台，各自独立 `K_pair`；`K_otp` 为用户级，吊销任一设备时轮换，剩余设备通过签名刷新接口取新码 |
 | 设备持久化 | SQLite 元数据 + 每设备密钥的 DPAPI blob；`K_otp` 在 `keys.bin` |
 | PWA 任务表单 | 已实现文本 + 附件；工作区从配对二维码预填；512KB 分片上传 |
-| 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核；zip 条目扫描 |
-| 结果文件 | 已实现 outbox → `done/<id>/files/<index>`；元数据/哈希/密钥扫描；按索引加密下载；zip 条目扫描 |
+| 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核；zip 条目与 Office 容器扫描 |
+| 结果文件 | 已实现 outbox → `done/<id>/files/<index>`；元数据/哈希/密钥扫描；按索引加密下载；zip/Office 容器扫描 |
 | 结果保留 | `done/`、`working/` 默认 7 天；过期 `EXPIRED`/`RESULT_EXPIRED`；`rejected/`、`expired/` 同 TTL 清理 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
@@ -497,4 +498,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v3.4 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip 条目扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v3.5 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；DSH 插件隔离实机验证；其余评审项待定*

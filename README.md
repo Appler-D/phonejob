@@ -23,7 +23,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/vapid-store.js`：DPAPI 保护 VAPID P-256 公私钥（`vapid.bin`）
 - `bridge/push.js` / `bridge/push-service.js`：RFC 8291 `aes128gcm` 负载加密、VAPID JWT 签名、推送投递与 404/410 订阅清理
 - `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、活跃任务/收件箱字节上限、OTP/挑战码失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询（状态响应用 `K_enc` 加密并绑定请求 ts）、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时、结果与收件箱保留清理
-- `bridge/zip-scan.js`：`zip` 内部路径、类型、加密、嵌套深度、条目数与解压大小检查；结果文件同样扫描
+- `bridge/zip-scan.js`：`zip` 内部路径、类型、加密、嵌套深度、条目数与解压大小检查；`.docx/.xlsx/.pptx` 容器额外拒绝宏工程、嵌入对象、ActiveX 与 externalLinks 目录；结果文件同样扫描
 - `bridge/confirm.js`：HMAC-SHA256 + Base32 的 8 位确认码（绑定 `job_hash` 与挑战码）
 - `bridge/result.js`：结果与结果文件元数据校验、大小/类型限制、密钥/私钥模式扫描；`K_otp` 泄露阻断
 - `bridge/crypto.js`：新增文件分片 AES-GCM 的 `sealFileChunk` / `openFileChunk`
@@ -42,8 +42,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；93 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、离线队列断网场景和 iOS 推送尚未实测
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；95 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip/Office 容器扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、活跃任务/收件箱字节上限、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理、吊销轮换与设备 OTP 刷新、状态响应 E2E、离线队列退避/过期、VAPID JWT 与推送负载加密/订阅注册、SQLite/密钥/审计/收件箱备份恢复与校验和已用单元/HTTP 测试覆盖；真实推送服务、离线队列断网场景和 iOS 推送尚未实测
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；配置稳定 HTTPS PWA origin 与真实推送服务实测 Web Push；iOS Safari 实测
 
@@ -73,7 +73,7 @@ PHONEJOB_WORKSPACES="C:/Temp/phonejob-ws" \
 node bridge/index.js
 ```
 
-`PHONEJOB_WORKSPACES` 为空时所有 job 都会被拒绝。附件限制：最多 20 个、单文件 ≤50MB、任务总计 ≤200MB、512KB 分片；类型白名单 jpg/jpeg/png/pdf/docx/xlsx/pptx/txt/md/zip。zip 会检查内部路径、类型、加密、嵌套深度与声明解压大小。结果文件限制：最多 10 个、单文件 ≤10MB、总计 ≤20MB；类型白名单在附件基础上增加 csv/json，zip 同样扫描。审批已实现（`pending/` → `approved/`）；DSH 执行已实现，未获批的任务不会进入 `approved/`。
+`PHONEJOB_WORKSPACES` 为空时所有 job 都会被拒绝。附件限制：最多 20 个、单文件 ≤50MB、任务总计 ≤200MB、512KB 分片；类型白名单 jpg/jpeg/png/pdf/docx/xlsx/pptx/txt/md/zip。zip 会检查内部路径、类型、加密、嵌套深度与声明解压大小；docx/xlsx/pptx 会拒绝宏工程、嵌入对象、ActiveX 与 externalLinks 目录。结果文件限制：最多 10 个、单文件 ≤10MB、总计 ≤20MB；类型白名单在附件基础上增加 csv/json，zip 与 Office 容器同样扫描。审批已实现（`pending/` → `approved/`）；DSH 执行已实现，未获批的任务不会进入 `approved/`。
 
 超时默认值：上传 30 分钟、确认 10 分钟（超时移入 `expired/` 并标记 `EXPIRED`）、执行 35 分钟（bridge 兜底标记 `FAILED`；插件自身 30 分钟取消当前轮）。可用 `PHONEJOB_UPLOAD_TTL_MS` / `PHONEJOB_CONFIRM_TTL_MS` / `PHONEJOB_EXECUTION_TTL_MS` 覆盖 bridge 默认值。
 
