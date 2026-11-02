@@ -55,6 +55,15 @@ h2 {
   font-size: 0.9rem;
 }
 
+.security {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
 a {
   color: var(--accent);
 }

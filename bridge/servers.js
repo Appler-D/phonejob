@@ -510,7 +510,11 @@ export function createBridgeServers({
           return;
         }
         checkAdmin(req);
-        sendJson(res, 200, { jobs: await jobs.listJobs() });
+        const [jobsList, locks] = await Promise.all([
+          jobs.listJobs(),
+          jobs.listAuthFailures(),
+        ]);
+        sendJson(res, 200, { jobs: jobsList, locks });
         return;
       }
 

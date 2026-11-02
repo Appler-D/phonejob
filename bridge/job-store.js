@@ -27,6 +27,10 @@ export class MemoryJobStore {
     this.authFailures.delete(deviceId);
   }
 
+  async listAuthFailures() {
+    return [...this.authFailures.values()];
+  }
+
   async getJob(jobId) {
     return this.jobs.get(jobId) ?? null;
   }
@@ -180,6 +184,10 @@ export class SqliteJobStore {
 
   async clearAuthFailures(deviceId) {
     this.db.prepare('DELETE FROM auth_failures WHERE device_id = ?').run(deviceId);
+  }
+
+  async listAuthFailures() {
+    return this.db.prepare('SELECT * FROM auth_failures ORDER BY locked_until DESC').all();
   }
 
   async saveJobWithSequence({ job, seq, nonce }) {

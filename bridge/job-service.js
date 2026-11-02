@@ -1004,6 +1004,10 @@ export class JobService {
     return this.jobStore.listJobs();
   }
 
+  listAuthFailures() {
+    return this.jobStore.listAuthFailures();
+  }
+
   getJob(jobId) {
     return this.jobStore.getJob(jobId);
   }

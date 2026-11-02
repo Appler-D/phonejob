@@ -2,6 +2,7 @@
 (() => {
   const token = document.querySelector('meta[name="phonejob-admin-token"]')?.content || '';
   const listError = document.getElementById('list-error');
+  const securityBanner = document.getElementById('security-banner');
   const empty = document.getElementById('empty');
   const jobsEl = document.getElementById('jobs');
   const detail = document.getElementById('detail');
@@ -52,10 +53,31 @@
     try {
       const body = await request('/api/jobs');
       renderJobs(body.jobs);
+      renderSecurity(body.locks);
       listError.textContent = '';
     } catch (err) {
       listError.textContent = err instanceof TypeError ? '无法连接 bridge' : err.message;
     }
+  }
+
+  function renderSecurity(locks) {
+    const now = Date.now();
+    const active = (Array.isArray(locks) ? locks : []).filter(
+      (lock) => Number(lock.locked_until) > now,
+    );
+    if (active.length === 0) {
+      securityBanner.hidden = true;
+      securityBanner.textContent = '';
+      return;
+    }
+    securityBanner.hidden = false;
+    securityBanner.textContent = `可疑活动：${active
+      .map((lock) => {
+        const id = String(lock.device_id ?? '').slice(0, 12);
+        const until = new Date(Number(lock.locked_until)).toLocaleString();
+        return `设备 ${id}… 连续失败 ${lock.failures} 次，锁定至 ${until}`;
+      })
+      .join('；')}。如非本人操作，请检查配对设备并考虑吊销。`;
   }
 
   async function loadDetail(jobId) {

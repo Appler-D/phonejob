@@ -154,6 +154,7 @@ test('auth failure state persists and clears', async (t) => {
     window_started_at: 100,
     locked_until: 200,
   });
+  assert.equal((await memory.listAuthFailures()).length, 1);
   await memory.clearAuthFailures('dev_test_1');
   assert.equal(await memory.getAuthFailure('dev_test_1'), null);
 
@@ -174,7 +175,9 @@ test('auth failure state persists and clears', async (t) => {
   assert.equal(persisted.failures, 10);
   assert.equal(persisted.window_started_at, 100);
   assert.equal(persisted.locked_until, 200);
+  assert.equal((await reopened.listAuthFailures()).length, 1);
   await reopened.clearAuthFailures('dev_test_1');
   assert.equal(await reopened.getAuthFailure('dev_test_1'), null);
+  assert.equal((await reopened.listAuthFailures()).length, 0);
   await reopened.close();
 });

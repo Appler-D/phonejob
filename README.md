@@ -28,7 +28,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留；challenge/job_hash/decided_at）
 - `bridge/audit.js`：配对/任务事件写 `audit.jsonl`；字段白名单（job/pairing/device/state/risk/intent/文件数/字节/错误），不记录正文、路径、挑战码、job_hash、SAS、公钥或密钥；按 5MB 轮转、保留 4 份备份、启动时清理 90 天前条目
 - `bridge/servers.js`：API 端口放 `health/claim/provision/job`、带设备签名的 `GET /api/job/:id|result|result/file/:idx` 与 `PUT /api/job/:id/file/:idx`；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
-- `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
+- `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）；任务页显示被锁定设备的可疑活动提示
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite，每秒扫描 `done/` 结果、每 30 秒处理超时、每 30 分钟清理过期结果，任务状态写入 `audit.jsonl`
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
@@ -63,7 +63,7 @@ node bridge/index.js
 
 超时默认值：上传 30 分钟、确认 10 分钟（超时移入 `expired/` 并标记 `EXPIRED`）、执行 35 分钟（bridge 兜底标记 `FAILED`；插件自身 30 分钟取消当前轮）。可用 `PHONEJOB_UPLOAD_TTL_MS` / `PHONEJOB_CONFIRM_TTL_MS` / `PHONEJOB_EXECUTION_TTL_MS` 覆盖 bridge 默认值。
 
-限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 或挑战码连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态存 SQLite，bridge 重启后仍保留。
+限流：每设备每小时最多 10 个任务（`PHONEJOB_MAX_JOBS_PER_HOUR`）；OTP 或挑战码连续失败 3 次锁 5 分钟、10 次锁 1 小时。锁定状态存 SQLite，bridge 重启后仍保留；本地 `/jobs` 页会显示锁定设备。
 
 PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，meta 里无效）；bridge 的 `PHONEJOB_PWA_ORIGIN` 必须与 PWA origin 完全一致。
 

@@ -232,11 +232,20 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
     await readFile(path.join(inboxDir, 'pending', jobId, 'job.json'), 'utf8'),
   );
   assert.equal(pending.text, 'hello http');
+  await jobs.jobStore.saveAuthFailure({
+    deviceId: phone.claim.device_id,
+    failures: 3,
+    windowStartedAt: Date.now(),
+    lockedUntil: Date.now() + 300_000,
+  });
   const jobList = await request(local, '/api/jobs', {
     headers: { 'X-PhoneJob-Admin': 'test-admin' },
   });
   assert.equal(jobList.status, 200);
   assert.equal(parse(jobList).jobs.length, 1);
+  assert.equal(parse(jobList).locks.length, 1);
+  assert.equal(parse(jobList).locks[0].failures, 3);
+  await jobs.jobStore.clearAuthFailures(phone.claim.device_id);
   assert.equal(parse(jobList).jobs[0].job_id, jobId);
 
   const statusTs = Math.floor(Date.now() / 1000);
