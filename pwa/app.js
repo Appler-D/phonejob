@@ -23,14 +23,19 @@ import {
   totpWithKey,
 } from './crypto.js';
 import {
+  clearOutbox,
   deleteDevice,
+  deleteOutbox,
   getDeviceKeys,
   getKey,
   listDevices,
+  listOutbox,
   putDevice,
   putDeviceKeys,
   putKey,
+  putOutbox,
 } from './store.js';
+import { outboxBackoffMs, outboxExpired } from './outbox.js';
 
 const pairPanel = document.getElementById('pair-panel');
 const totpPanel = document.getElementById('totp-panel');
@@ -52,6 +57,7 @@ const jobFilesList = document.getElementById('job-files-list');
 const jobSend = document.getElementById('job-send');
 const jobStatusEl = document.getElementById('job-status');
 const jobErrorEl = document.getElementById('job-error');
+const outboxStatusEl = document.getElementById('outbox-status');
 const jobWatch = document.getElementById('job-watch');
 const jobChallengeEl = document.getElementById('job-challenge');
 const jobResponseEl = document.getElementById('job-response');
@@ -65,6 +71,9 @@ let currentDevice = null;
 let currentKey = null;
 let totpTimer = null;
 let jobWatchTimer = null;
+let outboxTimer = null;
+let outboxBusy = false;
+let jobSending = false;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -80,6 +89,11 @@ function setJobStatus(text) {
 
 function setJobError(text) {
   jobErrorEl.textContent = text;
+}
+
+function setOutboxStatus(text) {
+  outboxStatusEl.textContent = text;
+  outboxStatusEl.hidden = !text;
 }
 
 function formatBytes(value) {
@@ -146,6 +160,7 @@ function showTotp(device, key) {
   renderTotp();
   totpTimer = setInterval(renderTotp, 1000);
   void refreshOtpKey();
+  startOutbox();
   if (device.last_job_id) {
     watchJob(device.last_job_id);
   } else {
@@ -535,6 +550,171 @@ function renderResultFiles(jobId, files) {
   });
 }
 
+function retryableError(message) {
+  const error = new Error(message);
+  error.retryable = true;
+  return error;
+}
+
+async function enqueueOutbox(jobId, workspace, intent, text, deviceKeys) {
+  const createdAt = Date.now();
+  const envelope = await sealEnvelope(
+    deviceKeys.enc,
+    {
+      v: 1,
+      type: 'outbox-v1',
+      job_id: jobId,
+      device_id: currentDevice.device_id,
+      created_at: createdAt,
+    },
+    JSON.stringify({ workspace, intent, text }),
+  );
+  await putOutbox({
+    id: jobId,
+    device_id: currentDevice.device_id,
+    created_at: createdAt,
+    attempts: 0,
+    next_at: createdAt,
+    envelope,
+  });
+  setOutboxStatus('已加入待发送队列，网络恢复后自动重试');
+  startOutbox();
+}
+
+async function submitOutboxEntry(entry, deviceKeys) {
+  const opened = await openEnvelope(deviceKeys.enc, entry.envelope);
+  const header = opened.header;
+  if (
+    header.type !== 'outbox-v1' ||
+    header.job_id !== entry.id ||
+    header.device_id !== entry.device_id
+  ) {
+    throw new Error('队列条目损坏');
+  }
+  const payload = JSON.parse(new TextDecoder().decode(opened.plaintext));
+  await refreshOtpKey();
+  if (!currentKey) throw new Error('动态密码子缺失，请重新配对');
+  const now = Date.now();
+  const seq = Number(currentDevice.seq ?? 0) + 1;
+  const envelope = await sealEnvelope(
+    deviceKeys.enc,
+    {
+      v: 2,
+      job_id: entry.id,
+      device_id: currentDevice.device_id,
+      ts: Math.floor(now / 1000),
+      seq,
+      otp: await totpWithKey(currentKey, now),
+    },
+    JSON.stringify({
+      version: 1,
+      job_id: entry.id,
+      device_id: currentDevice.device_id,
+      target: { workspace: payload.workspace, preset: 'default', session: null },
+      intent: payload.intent,
+      text: payload.text,
+      files: [],
+      reply: { want: 'text', max_bytes: 20 * 1024 * 1024 },
+    }),
+  );
+  let response;
+  try {
+    response = await fetch(`${currentDevice.bridge_url}/api/job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envelope),
+    });
+  } catch (err) {
+    throw retryableError(err instanceof TypeError ? '无法连接 bridge' : err.message);
+  }
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const code = body?.error || `HTTP ${response.status}`;
+    const error = new Error(code);
+    error.retryable =
+      response.status === 408 || response.status === 429 || response.status >= 500;
+    throw error;
+  }
+  if (!body || typeof body !== 'object') throw retryableError('bridge 响应无效');
+  currentDevice.seq = seq;
+  currentDevice.last_job_id = entry.id;
+  await putDevice(currentDevice);
+  await deleteOutbox(entry.id);
+  setOutboxStatus('');
+  setJobError('');
+  setJobStatus(`已提交 ${entry.id}，状态 ${body.state}`);
+  watchJob(entry.id);
+}
+
+async function processOutbox() {
+  if (outboxBusy || jobSending || !currentDevice || !currentKey) return;
+  outboxBusy = true;
+  try {
+    const entries = await listOutbox(currentDevice.device_id);
+    if (entries.length === 0) {
+      setOutboxStatus('');
+      return;
+    }
+    const now = Date.now();
+    const active = [];
+    for (const entry of entries) {
+      if (outboxExpired(entry.created_at, now)) {
+        await deleteOutbox(entry.id);
+        setJobError('待发送任务已过期，请重新发送');
+        continue;
+      }
+      active.push(entry);
+    }
+    if (active.length === 0) {
+      setOutboxStatus('');
+      return;
+    }
+    setOutboxStatus(`待发送 ${active.length} 条，网络恢复后自动重试`);
+    const due = active.filter((entry) => Number(entry.next_at ?? 0) <= now);
+    for (const entry of due) {
+      try {
+        const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+        if (!deviceKeys) {
+          await deleteOutbox(entry.id);
+          setOutboxStatus('');
+          setError('设备密钥缺失，请重新配对');
+          continue;
+        }
+        await submitOutboxEntry(entry, deviceKeys);
+        return;
+      } catch (err) {
+        if (err.retryable) {
+          const attempts = Number(entry.attempts ?? 0) + 1;
+          await putOutbox({
+            ...entry,
+            attempts,
+            next_at: Date.now() + outboxBackoffMs(attempts),
+          });
+          setJobError('网络暂不可用，待发送任务会自动重试');
+          continue;
+        }
+        await deleteOutbox(entry.id);
+        setJobError(err.message || '待发送任务失败');
+      }
+    }
+  } catch {
+    // IndexedDB unavailable; keep the form-based flow working.
+  } finally {
+    outboxBusy = false;
+  }
+}
+
+function startOutbox() {
+  if (outboxTimer) {
+    void processOutbox();
+    return;
+  }
+  outboxTimer = setInterval(() => {
+    void processOutbox();
+  }, 5000);
+  void processOutbox();
+}
+
 async function watchJob(jobId) {
   stopJobWatch();
   jobWatch.hidden = false;
@@ -678,6 +858,10 @@ async function sendJob() {
     setJobError('请填写任务内容或选择附件');
     return;
   }
+  if (outboxBusy) {
+    setJobError('正在重试待发送任务，请稍后再试');
+    return;
+  }
   const deviceKeys = await getDeviceKeys(currentDevice.device_id);
   if (!deviceKeys) {
     setJobError('设备密钥缺失，请重新配对');
@@ -686,6 +870,8 @@ async function sendJob() {
   await refreshOtpKey();
 
   jobSend.disabled = true;
+  jobSending = true;
+  let queuedJob = null;
   try {
     const fileMeta = [];
     if (selected.length > 0) setJobStatus('计算文件校验…');
@@ -701,6 +887,7 @@ async function sendJob() {
     const seq = Number(currentDevice.seq ?? 0) + 1;
     const now = Date.now();
     const jobId = crypto.randomUUID();
+    queuedJob = { jobId, workspace, intent, text };
     const header = {
       v: 2,
       job_id: jobId,
@@ -739,6 +926,31 @@ async function sendJob() {
     }
     watchJob(body.job_id);
   } catch (err) {
+    const networkFailure =
+      err instanceof TypeError || /^HTTP 50[234]$/.test(String(err.message ?? ''));
+    if (networkFailure && selected.length === 0 && queuedJob) {
+      try {
+        await enqueueOutbox(
+          queuedJob.jobId,
+          queuedJob.workspace,
+          queuedJob.intent,
+          queuedJob.text,
+          deviceKeys,
+        );
+        setJobError('');
+        setJobStatus('');
+        jobText.value = '';
+        jobFiles.value = '';
+        renderSelectedFiles([]);
+      } catch (queueErr) {
+        setJobError(`加入待发送队列失败：${queueErr.message}`);
+      }
+      return;
+    }
+    if (networkFailure && selected.length > 0) {
+      setJobError('网络不可用；附件任务暂不支持离线排队，请稍后重试');
+      return;
+    }
     setJobError(
       err instanceof TypeError
         ? '无法连接 bridge（检查隧道、CORS 或网络）'
@@ -751,6 +963,7 @@ async function sendJob() {
               : err.message,
     );
   } finally {
+    jobSending = false;
     jobSend.disabled = false;
   }
 }
@@ -786,6 +999,7 @@ jobSend.addEventListener('click', sendJob);
 rePairButton.addEventListener('click', async () => {
   if (currentDevice) {
     try {
+      await clearOutbox(currentDevice.device_id);
       await deleteDevice(currentDevice);
     } catch {
       // The local key may already be gone; continue to the pairing view.

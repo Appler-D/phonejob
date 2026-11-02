@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-PhoneJob-Noncommercial-1.0
 const DB_NAME = 'phonejob';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let dbPromise = null;
 
 function openDb() {
@@ -17,6 +17,10 @@ function openDb() {
       }
       if (!db.objectStoreNames.contains('device_keys')) {
         db.createObjectStore('device_keys', { keyPath: 'device_id' });
+      }
+      if (!db.objectStoreNames.contains('outbox')) {
+        const outbox = db.createObjectStore('outbox', { keyPath: 'id' });
+        outbox.createIndex('device_id', 'device_id');
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -98,6 +102,60 @@ export async function deleteDevice(device) {
     transaction.objectStore('devices').delete(device.device_id);
     transaction.objectStore('keys').delete(device.key_id);
     transaction.objectStore('device_keys').delete(device.device_id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function putOutbox(entry) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('outbox', 'readwrite');
+    transaction.objectStore('outbox').put(entry);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function listOutbox(deviceId) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const request = db
+      .transaction('outbox', 'readonly')
+      .objectStore('outbox')
+      .index('device_id')
+      .getAll(deviceId);
+    request.onsuccess = () => {
+      const entries = request.result ?? [];
+      entries.sort((left, right) => left.created_at - right.created_at);
+      resolve(entries);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function deleteOutbox(id) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('outbox', 'readwrite');
+    transaction.objectStore('outbox').delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+export async function clearOutbox(deviceId) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('outbox', 'readwrite');
+    const store = transaction.objectStore('outbox');
+    const request = store.index('device_id').openKeyCursor(IDBKeyRange.only(deviceId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      store.delete(cursor.primaryKey);
+      cursor.continue();
+    };
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
   });
