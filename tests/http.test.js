@@ -200,6 +200,29 @@ test('HTTP pairing flow delivers the PC-generated K_otp', async (t) => {
   const received = await openOtpProvisioning(phone.keys.kEnc, parse(provision));
   assert.equal(received.otpSecret.equals(otpSecret), true);
 
+  const refreshTs = Math.floor(Date.now() / 1000);
+  const refreshProof = await hmacSha256Base64Url(
+    phone.keys.kAuth,
+    canonicalJson({
+      type: 'otp-refresh-v1',
+      device_id: phone.claim.device_id,
+      ts: refreshTs,
+    }),
+  );
+  const refresh = await request(api, '/api/device/otp', {
+    headers: {
+      'X-PhoneJob-Device': phone.claim.device_id,
+      'X-PhoneJob-Ts': String(refreshTs),
+      'X-PhoneJob-Proof': refreshProof,
+    },
+  });
+  assert.equal(refresh.status, 200, refresh.body);
+  const openedRefresh = await openEnvelope(phone.keys.kEnc, parse(refresh));
+  const refreshPayload = JSON.parse(Buffer.from(openedRefresh.plaintext).toString('utf8'));
+  assert.equal(refreshPayload.type, 'otp-refresh-v1');
+  assert.equal(refreshPayload.device_id, phone.claim.device_id);
+  assert.equal(Buffer.from(refreshPayload.k_otp, 'base64url').equals(otpSecret), true);
+
   const jobNow = Date.now();
   const jobId = 'job_http_1';
   const job = {

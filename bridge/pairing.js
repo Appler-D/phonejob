@@ -10,12 +10,14 @@ import {
   importPeerPublicKey,
   pairingTranscript,
   sealOtpProvisioning,
+  sealOtpRefresh,
 } from './crypto.js';
 import { MemoryDeviceStore } from './device-store.js';
 
 const PAIRING_TTL_MS = 120_000;
 const PROVISION_TTL_MS = 300_000;
 const MAX_DEVICES = 5;
+const DEVICE_ID_RE = /^dev_[A-Za-z0-9_-]{8,64}$/;
 
 function pairingError(code) {
   const error = new Error('Pairing rejected');
@@ -53,6 +55,7 @@ export class PairingService {
     now = () => Date.now(),
     pairingTtlMs = PAIRING_TTL_MS,
     provisionTtlMs = PROVISION_TTL_MS,
+    rotateOtp = null,
     audit = null,
   } = {}) {
     if (typeof loadOtp !== 'function') throw new TypeError('loadOtp is required');
@@ -61,6 +64,7 @@ export class PairingService {
     this.now = now;
     this.pairingTtlMs = pairingTtlMs;
     this.provisionTtlMs = provisionTtlMs;
+    this.rotateOtp = rotateOtp;
     this.audit = audit;
     this.pairings = new Map();
   }
@@ -267,10 +271,44 @@ export class PairingService {
     return this.deviceStore.listDevices();
   }
 
+  async refreshOtp({ deviceId, ts, proof }) {
+    if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
+      throw pairingError('DEVICE_NOT_FOUND');
+    }
+    if (!Number.isInteger(ts) || Math.abs(this.now() / 1000 - ts) > 120) {
+      throw pairingError('DEVICE_AUTH');
+    }
+    const device = await this.deviceStore.getDevice(deviceId);
+    if (!device || device.revoked) throw pairingError('DEVICE_NOT_FOUND');
+    const expected = await hmacSha256Base64Url(
+      device.keys.kAuth,
+      canonicalJson({ type: 'otp-refresh-v1', device_id: deviceId, ts }),
+    );
+    if (!safeEqualBase64Url(proof, expected)) throw pairingError('DEVICE_AUTH');
+    const { secret, keyId } = await this.loadOtp();
+    this.audit?.record('device.otp_refreshed', { device_id: deviceId });
+    return sealOtpRefresh(device.keys.kEnc, { deviceId, keyId, otpSecret: secret });
+  }
+
   async revokeDevice(deviceId) {
+    const device = await this.deviceStore.getDevice(deviceId);
+    if (!device) throw pairingError('DEVICE_NOT_FOUND');
+    if (device.revoked) return { ok: true };
     const revoked = await this.deviceStore.revokeDevice(deviceId);
     if (!revoked) throw pairingError('DEVICE_NOT_FOUND');
     this.audit?.record('pairing.revoked', { device_id: deviceId });
+    if (this.rotateOtp) {
+      try {
+        await this.rotateOtp();
+      } catch {
+        this.audit?.record('otp.rotate_failed', {
+          device_id: deviceId,
+          error: 'OTP_ROTATE_FAILED',
+        });
+        throw pairingError('OTP_ROTATE_FAILED');
+      }
+      this.audit?.record('otp.rotated', { device_id: deviceId, reason: 'device_revoked' });
+    }
     return { ok: true };
   }
 

@@ -15,6 +15,7 @@ import {
   importPeerPublicKey,
   openEnvelope,
   openOtpProvisioning,
+  openOtpRefresh,
   pairingTranscript,
   sealEnvelope,
   sealFileChunk,
@@ -144,6 +145,7 @@ function showTotp(device, key) {
   stopTotp();
   renderTotp();
   totpTimer = setInterval(renderTotp, 1000);
+  void refreshOtpKey();
   if (device.last_job_id) {
     watchJob(device.last_job_id);
   } else {
@@ -317,6 +319,54 @@ async function startPairing() {
     setError(err instanceof TypeError ? '无法连接 bridge（检查隧道、CORS 或网络）' : err.message);
   } finally {
     pairButton.disabled = false;
+  }
+}
+
+async function refreshOtpKey() {
+  if (!currentDevice) return false;
+  try {
+    const deviceKeys = await getDeviceKeys(currentDevice.device_id);
+    if (!deviceKeys) return false;
+    const ts = Math.floor(Date.now() / 1000);
+    const proof = toBase64Url(
+      await hmacWithKey(
+        deviceKeys.auth,
+        canonicalJson({
+          type: 'otp-refresh-v1',
+          device_id: currentDevice.device_id,
+          ts,
+        }),
+      ),
+    );
+    const response = await fetch(`${currentDevice.bridge_url}/api/device/otp`, {
+      headers: {
+        'X-PhoneJob-Device': currentDevice.device_id,
+        'X-PhoneJob-Ts': String(ts),
+        'X-PhoneJob-Proof': proof,
+      },
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      if (body?.error === 'DEVICE_NOT_FOUND' || body?.error === 'DEVICE_AUTH') {
+        setError('设备已被吊销或认证失败，请重新配对');
+      }
+      return false;
+    }
+    const opened = await openOtpRefresh(deviceKeys.enc, body);
+    if (opened.deviceId !== currentDevice.device_id) throw new Error('刷新信封设备不匹配');
+    if (opened.keyId === currentDevice.key_id) return true;
+    const otpKey = await importOtpKey(opened.otpSecret);
+    await putKey(opened.keyId, otpKey);
+    currentKey = otpKey;
+    currentDevice.key_id = opened.keyId;
+    await putDevice(currentDevice);
+    renderTotp();
+    setError('');
+    return true;
+  } catch (err) {
+    if (err instanceof TypeError) return false;
+    setError(err.message);
+    return false;
   }
 }
 
@@ -623,6 +673,7 @@ async function sendJob() {
     setJobError('设备密钥缺失，请重新配对');
     return;
   }
+  await refreshOtpKey();
 
   jobSend.disabled = true;
   try {
@@ -731,6 +782,9 @@ rePairButton.addEventListener('click', async () => {
     }
   }
   showPair();
+});
+window.addEventListener('online', () => {
+  void refreshOtpKey();
 });
 
 init();

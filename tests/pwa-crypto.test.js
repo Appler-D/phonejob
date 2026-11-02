@@ -184,6 +184,22 @@ test('PWA opens a result envelope sealed by the bridge', async () => {
   assert.equal(openedFile.header.file_index, 0);
 });
 
+test('PWA opens an OTP refresh envelope', async () => {
+  const { pcKeys, phoneKeys } = await keysForBothSides();
+  const secret = generateOtpSecret();
+  const envelope = await bridge.sealOtpRefresh(pcKeys.kEnc, {
+    deviceId: 'dev_test_device_1',
+    keyId: 'key-new',
+    otpSecret: secret,
+  });
+  const aesKey = await pwa.importAesKey(phoneKeys.kEnc);
+  const opened = await pwa.openOtpRefresh(aesKey, envelope);
+  assert.equal(opened.deviceId, 'dev_test_device_1');
+  assert.equal(opened.keyId, 'key-new');
+  assert.equal(Buffer.from(opened.otpSecret).equals(secret), true);
+  await assert.rejects(() => pwa.openOtpRefresh(aesKey, { ...envelope, key_id: 'other' }));
+});
+
 test('PWA confirmation response and status proof match the bridge', async () => {
   const { phoneKeys } = await keysForBothSides();
   const confirmKey = await pwa.importHmacKey(phoneKeys.kConfirm);

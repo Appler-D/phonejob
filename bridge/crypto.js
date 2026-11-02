@@ -244,3 +244,77 @@ export async function openOtpProvisioning(kEnc, envelope) {
   }
   return { otpSecret, keyId: payload.key_id, issuedAt: payload.issued_at };
 }
+
+export async function sealOtpRefresh(
+  kEnc,
+  { deviceId, keyId, otpSecret, issuedAt = new Date().toISOString() },
+) {
+  if (!Buffer.isBuffer(otpSecret) || otpSecret.length !== 32) {
+    throw new Error('Invalid OTP secret');
+  }
+  const nonce = randomBytes(12);
+  const header = {
+    v: 1,
+    type: 'otp-refresh-v1',
+    device_id: deviceId,
+    key_id: keyId,
+    nonce: toBase64Url(nonce),
+  };
+  const payload = {
+    v: 1,
+    type: 'otp-refresh-v1',
+    device_id: deviceId,
+    key_id: keyId,
+    k_otp: toBase64Url(otpSecret),
+    issued_at: issuedAt,
+  };
+  const aad = utf8(canonicalJson(header));
+  const key = await importAesKey(kEnc);
+  const ciphertext = new Uint8Array(
+    await subtle.encrypt(
+      { ...AES_PARAMS, iv: nonce, additionalData: aad },
+      key,
+      utf8(JSON.stringify(payload)),
+    ),
+  );
+  return { ...header, ct: toBase64Url(ciphertext) };
+}
+
+export async function openOtpRefresh(kEnc, envelope) {
+  if (
+    !envelope ||
+    typeof envelope !== 'object' ||
+    envelope.type !== 'otp-refresh-v1' ||
+    typeof envelope.ct !== 'string' ||
+    typeof envelope.device_id !== 'string' ||
+    typeof envelope.key_id !== 'string' ||
+    typeof envelope.nonce !== 'string'
+  ) {
+    throw new Error('Invalid refresh envelope');
+  }
+  const { ct, ...header } = envelope;
+  const aad = utf8(canonicalJson(header));
+  const key = await importAesKey(kEnc);
+  const plaintext = await subtle.decrypt(
+    { ...AES_PARAMS, iv: fromBase64Url(header.nonce), additionalData: aad },
+    key,
+    fromBase64Url(ct),
+  );
+  let payload;
+  try {
+    payload = JSON.parse(decoder.decode(plaintext));
+  } catch {
+    throw new Error('Invalid refresh payload');
+  }
+  if (
+    payload.type !== 'otp-refresh-v1' ||
+    payload.device_id !== envelope.device_id ||
+    payload.key_id !== envelope.key_id ||
+    typeof payload.k_otp !== 'string'
+  ) {
+    throw new Error('Refresh payload mismatch');
+  }
+  const otpSecret = Buffer.from(payload.k_otp, 'base64url');
+  if (otpSecret.length !== 32) throw new Error('Invalid OTP secret length');
+  return { deviceId: payload.device_id, otpSecret, keyId: payload.key_id, issuedAt: payload.issued_at };
+}

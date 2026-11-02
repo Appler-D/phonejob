@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createBridgeServers } from './servers.js';
 import { PairingService } from './pairing.js';
-import { loadOrCreateKeyStore } from './key-store.js';
+import { loadOrCreateKeyStore, rotateKeyStore } from './key-store.js';
 import { SqliteDeviceStore } from './device-store.js';
 import { SqliteJobStore } from './job-store.js';
 import { JobService } from './job-service.js';
@@ -70,6 +70,11 @@ const loadOtp = async () => {
   }
   return cachedKey;
 };
+const rotateOtp = async () => {
+  const store = await rotateKeyStore(keysPath);
+  cachedKey = { secret: store.secret, keyId: store.keyId };
+  return cachedKey;
+};
 
 const adminToken = process.env.PHONEJOB_ADMIN_TOKEN || randomBytes(24).toString('base64url');
 const tokenPath = path.join(path.dirname(keysPath), 'admin.token');
@@ -83,7 +88,7 @@ const audit = new AuditLog({ filePath: auditPath });
 await audit.prune();
 const deviceStore = new SqliteDeviceStore({ filePath: dbPath });
 const jobStore = new SqliteJobStore({ filePath: dbPath });
-const pairing = new PairingService({ loadOtp, deviceStore, audit });
+const pairing = new PairingService({ loadOtp, deviceStore, rotateOtp, audit });
 const jobs = new JobService({
   deviceStore,
   jobStore,

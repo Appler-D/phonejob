@@ -11,17 +11,19 @@ import {
   hmacSha256Base64Url,
   importPeerPublicKey,
   openOtpProvisioning,
+  openOtpRefresh,
   pairingTranscript,
 } from '../bridge/crypto.js';
 import { generateOtpSecret } from '../bridge/key-store.js';
 import { totp, verifyTotp } from '../bridge/totp.js';
 
-async function startFixture({ now = () => Date.now(), pairingTtlMs = 120_000, audit } = {}) {
+async function startFixture({ now = () => Date.now(), pairingTtlMs = 120_000, audit, rotateOtp } = {}) {
   const otpSecret = generateOtpSecret();
   const service = new PairingService({
     loadOtp: async () => ({ secret: otpSecret, keyId: 'key-test' }),
     now,
     pairingTtlMs,
+    rotateOtp,
     audit,
   });
   const start = await service.startPairing({ bridgeUrl: 'https://bridge.test' });
@@ -233,4 +235,55 @@ test('pairing emits redacted audit events', async () => {
       assert.equal(key in entry, false, key);
     }
   }
+});
+
+test('revoking a device rotates K_otp once', async () => {
+  let rotations = 0;
+  const fixture = await claimedFixture({
+    rotateOtp: async () => {
+      rotations += 1;
+    },
+  });
+  fixture.service.confirmPairing({ pairId: fixture.start.pair_id, sas: fixture.sas });
+  await fixture.service.provisionOtp({
+    pairId: fixture.start.pair_id,
+    deviceId: fixture.claim.device_id,
+    proof: await provisionProof(fixture),
+  });
+
+  assert.equal((await fixture.service.revokeDevice(fixture.claim.device_id)).ok, true);
+  assert.equal(rotations, 1);
+  assert.equal((await fixture.service.revokeDevice(fixture.claim.device_id)).ok, true);
+  assert.equal(rotations, 1);
+});
+
+test('a device can refresh the current OTP envelope', async () => {
+  const fixture = await claimedFixture();
+  fixture.service.confirmPairing({ pairId: fixture.start.pair_id, sas: fixture.sas });
+  await fixture.service.provisionOtp({
+    pairId: fixture.start.pair_id,
+    deviceId: fixture.claim.device_id,
+    proof: await provisionProof(fixture),
+  });
+  const deviceId = fixture.claim.device_id;
+  const ts = Math.floor(fixture.service.now() / 1000);
+  const proof = await hmacSha256Base64Url(
+    fixture.keys.kAuth,
+    canonicalJson({ type: 'otp-refresh-v1', device_id: deviceId, ts }),
+  );
+  const envelope = await fixture.service.refreshOtp({ deviceId, ts, proof });
+  const opened = await openOtpRefresh(fixture.keys.kEnc, envelope);
+  assert.equal(opened.deviceId, deviceId);
+  assert.equal(opened.keyId, 'key-test');
+  assert.equal(Buffer.from(opened.otpSecret).equals(fixture.otpSecret), true);
+
+  await assert.rejects(
+    () => fixture.service.refreshOtp({ deviceId, ts, proof: 'bad' }),
+    (err) => err.code === 'DEVICE_AUTH',
+  );
+  await fixture.service.revokeDevice(deviceId);
+  await assert.rejects(
+    () => fixture.service.refreshOtp({ deviceId, ts, proof }),
+    (err) => err.code === 'DEVICE_NOT_FOUND',
+  );
 });

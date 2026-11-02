@@ -31,6 +31,8 @@ const ERROR_STATUS = {
   DEVICE_MISMATCH: 400,
   DEVICE_LIMIT: 429,
   DEVICE_NOT_FOUND: 404,
+  DEVICE_AUTH: 401,
+  OTP_ROTATE_FAILED: 500,
   JOB_INVALID: 400,
   JOB_DEVICE_REJECTED: 404,
   JOB_TIME_WINDOW: 400,
@@ -308,6 +310,15 @@ export function createBridgeServers({
           }
           throw err;
         }
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/device/otp') {
+        const result = await pairing.refreshOtp({
+          deviceId: req.headers['x-phonejob-device'],
+          ts: Number(req.headers['x-phonejob-ts']),
+          proof: req.headers['x-phonejob-proof'],
+        });
+        sendJson(res, 200, result, corsHeaders(req));
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/job') {
