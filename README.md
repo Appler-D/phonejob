@@ -30,6 +30,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/job-store.js`：SQLite `jobs` + `seen_messages`（seq/nonce 防重放，重启保留；challenge/job_hash/decided_at）
 - `bridge/audit.js`：配对/任务事件写 `audit.jsonl`；字段白名单（job/pairing/device/state/risk/intent/文件数/字节/错误），不记录正文、路径、挑战码、job_hash、SAS、公钥或密钥；按 5MB 轮转、保留 4 份备份、启动时清理 90 天前条目
 - `bridge/backup.js` / `tools/backup.mjs` / `tools/restore.mjs`：SQLite `VACUUM INTO` 快照 + 密钥/审计/可选收件箱；manifest SHA-256 校验；恢复前需停 bridge
+- `tools/install-autostart.ps1` / `tools/remove-autostart.ps1`：为当前 Windows 用户注册/移除登录时启动 bridge 的计划任务
 - `bridge/servers.js`：API 端口放 `health/claim/provision/device/otp/device/push/job`、带设备签名的 `GET /api/job/:id|result|result/file/:idx` 与 `PUT /api/job/:id/file/:idx`；`health` 返回 VAPID 公钥；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
 - `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）；任务页显示被锁定设备的可疑活动提示
 - `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite，每秒扫描 `done/` 结果、每 30 秒处理超时、每 30 分钟清理过期结果，任务状态写入 `audit.jsonl`
@@ -64,6 +65,15 @@ node tools/restore.mjs D:/phonejob-backup --force
 ```
 
 `keys.bin` / `vapid.bin` 是 DPAPI 用户级密钥，备份只能在保存它们的同一 Windows 用户下恢复；备份文件含敏感数据，请自行加密保管。
+
+Windows 登录自启动（创建当前用户的计划任务，日志在 `%LOCALAPPDATA%\PhoneJob\bridge.log`）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/install-autostart.ps1 -Workspace "D:\your-workspace" -PwaOrigin "https://your-pwa-origin"
+powershell -ExecutionPolicy Bypass -File tools/remove-autostart.ps1
+```
+
+CI：`.github/workflows/test.yml` 在 Windows 与 Ubuntu 上执行 `npm ci` 和 `npm test`；Windows 覆盖 DPAPI 测试，Ubuntu 跳过依赖 DPAPI 的用例。
 
 本地联调时让 bridge 允许 PWA origin，并配置允许的 job 工作区：
 

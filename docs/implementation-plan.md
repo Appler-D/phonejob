@@ -494,8 +494,9 @@ cloudflared tunnel run phonejob
 | 队列/磁盘 | 活跃任务默认 20、收件箱默认 2GB；超限拒绝新任务 |
 | Web Push | VAPID + RFC 8291 `aes128gcm`；订阅绑定设备；批准/完成/失败/过期通知；404/410 清理订阅；真实推送与 HTTPS origin 待测 |
 | 备份恢复 | SQLite `VACUUM INTO` + keys/vapid/audit/可选 inbox；manifest SHA-256；DPAPI 同用户；恢复需停 bridge |
+| CI/自启动 | GitHub Actions Windows+Ubuntu `npm ci && npm test`；Windows 登录计划任务脚本（运行/移除） |
 | 曲线 | v1 以 P-256 为主；X25519 可选，按目标设备实测 |
 
 ---
 
-*版本 v3.5 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v3.6 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；状态/结果/结果文件 E2E；确认/上传/执行超时；结果保留清理；zip/Office 容器扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定；队列/磁盘上限；吊销轮换与设备 OTP 刷新；文本任务离线队列；Web Push；备份恢复；CI/Windows 自启动；DSH 插件隔离实机验证；其余评审项待定*

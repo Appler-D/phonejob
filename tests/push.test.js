@@ -10,6 +10,7 @@ import { PushService } from '../bridge/push-service.js';
 import { loadOrCreateVapidStore, readVapidStore } from '../bridge/vapid-store.js';
 
 const subtle = globalThis.crypto.subtle;
+const WINDOWS = process.platform === 'win32';
 
 async function makeVapid() {
   const pair = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
@@ -23,7 +24,7 @@ async function makeVapid() {
   return { privateJwk, publicKey };
 }
 
-test('VAPID store persists and signs a verifiable JWT', async (t) => {
+test('VAPID store persists and signs a verifiable JWT', { skip: !WINDOWS }, async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'phonejob-vapid-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'vapid.bin');
