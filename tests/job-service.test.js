@@ -34,6 +34,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    resultTtlMs,
     maxJobsPerHour,
     audit,
   } = {},
@@ -63,6 +64,7 @@ async function setup(
     confirmTtlMs,
     uploadTtlMs,
     executionTtlMs,
+    resultTtlMs,
     maxJobsPerHour,
     audit,
   });
@@ -1194,4 +1196,87 @@ test('challenge response failures lock approvals until the window passes', async
   current = now + 5 * 60_000 + 1;
   const approved = await f.service.approveJob({ jobId, response: expected });
   assert.equal(approved.state, 'QUEUED');
+});
+
+test('retention expires old results and prunes inbox directories', async (t) => {
+  const now = 1_761_900_000_000;
+  let current = now;
+  const f = await setup(t, { now: () => current, resultTtlMs: 1000 });
+  const jobId = 'job_test_retention';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now,
+      jobId,
+      seq: 1,
+    }),
+  );
+  const job = await f.service.getJob(jobId);
+  await f.service.approveJob({
+    jobId,
+    response: computeConfirmationResponse(KEYS.kConfirm, job.job_hash, job.challenge),
+  });
+  const content = Buffer.from('retained result');
+  const meta = await writeResultFile(f.inbox, jobId, 0, content);
+  await writeResult(f.inbox, jobId, { text: 'answer', files: [meta] });
+  await f.service.scanResults();
+  await mkdir(path.join(f.inbox, 'working', jobId), { recursive: true });
+  await writeFile(path.join(f.inbox, 'working', jobId, 'marker'), 'still here');
+
+  assert.deepEqual(await f.service.scanRetention(), []);
+
+  current = now + 1001;
+  const removed = await f.service.scanRetention();
+  assert.equal(removed.length, 1);
+  assert.equal(removed[0].state, 'EXPIRED');
+  assert.equal(removed[0].error, 'RESULT_EXPIRED');
+  const stored = await f.service.getJob(jobId);
+  assert.equal(stored.state, 'EXPIRED');
+  assert.equal(stored.result_error, 'RESULT_EXPIRED');
+  await assert.rejects(() => readFile(path.join(f.inbox, 'done', jobId, 'result.json')));
+  await assert.rejects(() => readFile(path.join(f.inbox, 'working', jobId, 'marker')));
+
+  const ts = Math.floor(current / 1000);
+  const statusProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-status-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  const status = await f.service.getForDevice({
+    jobId,
+    deviceId: DEVICE_ID,
+    ts,
+    proof: statusProof,
+  });
+  assert.equal(status.state, 'EXPIRED');
+  assert.equal(status.error, 'RESULT_EXPIRED');
+
+  const resultProof = await hmacSha256Base64Url(
+    KEYS.kAuth,
+    canonicalJson({ type: 'job-result-v1', device_id: DEVICE_ID, job_id: jobId, ts }),
+  );
+  await assert.rejects(
+    () => f.service.getResultForDevice({ jobId, deviceId: DEVICE_ID, ts, proof: resultProof }),
+    (err) => err.code === 'JOB_RESULT_NOT_READY',
+  );
+
+  const rejectedId = 'job_test_retention_rejected';
+  await f.service.submit(
+    await makeEnvelope({
+      secret: f.otpSecret,
+      workspace: f.workspace,
+      now: current,
+      jobId: rejectedId,
+      seq: 2,
+    }),
+  );
+  await f.service.rejectJob({ jobId: rejectedId });
+  current += 1001;
+  const pruned = await f.service.scanRetention();
+  assert.equal(pruned.length, 1);
+  assert.equal(pruned[0].state, 'REJECTED');
+  assert.equal(pruned[0].error, 'RETENTION');
+  assert.equal((await f.service.getJob(rejectedId)).state, 'REJECTED');
+  await assert.rejects(() => readFile(path.join(f.inbox, 'rejected', rejectedId, 'job.json')));
+  assert.deepEqual(await f.service.scanRetention(), []);
 });

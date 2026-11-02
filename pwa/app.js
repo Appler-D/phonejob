@@ -511,7 +511,9 @@ async function watchJob(jobId) {
             ? '上传超时，请重新发送'
             : status.error === 'JOB_CONFIRM_TIMEOUT'
               ? '确认超时，请重新发送'
-              : `任务已超时${status.error ? `：${status.error}` : ''}`;
+              : status.error === 'RESULT_EXPIRED'
+                ? '结果已过期，无法再下载'
+                : `任务已超时${status.error ? `：${status.error}` : ''}`;
       } else if (status.state === 'FAILED') {
         stopJobWatch();
         jobStateEl.textContent = `执行失败${status.error ? `：${status.error}` : ''}`;

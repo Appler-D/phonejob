@@ -31,6 +31,7 @@ const CHUNK_SIZE = 512 * 1024;
 const DEFAULT_CONFIRM_TTL_MS = 10 * 60_000;
 const DEFAULT_UPLOAD_TTL_MS = 30 * 60_000;
 const DEFAULT_EXECUTION_TTL_MS = 35 * 60_000;
+const DEFAULT_RESULT_TTL_MS = 7 * 24 * 60 * 60_000;
 const DEFAULT_MAX_JOBS_PER_HOUR = 10;
 const RATE_WINDOW_MS = 60 * 60_000;
 const FAILURE_WINDOW_MS = 60 * 60_000;
@@ -71,6 +72,15 @@ function isObject(value) {
 function normalizePath(value) {
   const resolved = path.resolve(String(value));
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function pathExists(target) {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function safeEqualBase64(left, right) {
@@ -134,6 +144,7 @@ export class JobService {
     confirmTtlMs = DEFAULT_CONFIRM_TTL_MS,
     uploadTtlMs = DEFAULT_UPLOAD_TTL_MS,
     executionTtlMs = DEFAULT_EXECUTION_TTL_MS,
+    resultTtlMs = DEFAULT_RESULT_TTL_MS,
     maxJobsPerHour = DEFAULT_MAX_JOBS_PER_HOUR,
     audit = null,
   } = {}) {
@@ -149,10 +160,12 @@ export class JobService {
     this.confirmTtlMs = confirmTtlMs;
     this.uploadTtlMs = uploadTtlMs;
     this.executionTtlMs = executionTtlMs;
+    this.resultTtlMs = resultTtlMs;
     this.maxJobsPerHour = maxJobsPerHour;
     this.audit = audit;
     this.scanning = false;
     this.timeoutScanning = false;
+    this.retentionScanning = false;
   }
 
   #audit(event, job, extra = {}) {
@@ -766,6 +779,60 @@ export class JobService {
       return expired;
     } finally {
       this.timeoutScanning = false;
+    }
+  }
+
+  async scanRetention() {
+    if (this.retentionScanning) return [];
+    this.retentionScanning = true;
+    const removed = [];
+    try {
+      const now = this.now();
+      for (const job of await this.jobStore.listJobs()) {
+        if (!['DONE', 'FAILED', 'REJECTED', 'EXPIRED'].includes(job.state)) continue;
+        const since = job.finished_at ?? job.decided_at ?? job.created_at;
+        if (now - since < this.resultTtlMs) continue;
+
+        if (job.state === 'DONE' || job.state === 'FAILED') {
+          const doneDir = path.join(this.inboxDir, 'done', job.job_id);
+          const workingDir = path.join(this.inboxDir, 'working', job.job_id);
+          if (!(await pathExists(doneDir))) {
+            if (await pathExists(workingDir)) {
+              await rm(workingDir, { recursive: true, force: true });
+              this.#audit('job.inbox_pruned', job, { reason: 'retention' });
+              removed.push({ job_id: job.job_id, state: job.state, error: 'RETENTION' });
+            }
+            continue;
+          }
+          const updated = await this.jobStore.expireJob({
+            jobId: job.job_id,
+            fromStates: ['DONE', 'FAILED'],
+            state: 'EXPIRED',
+            resultError: 'RESULT_EXPIRED',
+            finishedAt: now,
+          });
+          if (!updated) continue;
+          await rm(doneDir, { recursive: true, force: true });
+          await rm(workingDir, { recursive: true, force: true });
+          this.#audit('job.result_expired', job, {
+            state: 'EXPIRED',
+            error: 'RESULT_EXPIRED',
+            reason: 'retention',
+          });
+          removed.push({ job_id: job.job_id, state: 'EXPIRED', error: 'RESULT_EXPIRED' });
+          continue;
+        }
+
+        const dirName = job.state === 'REJECTED' ? 'rejected' : 'expired';
+        const inboxDir = path.join(this.inboxDir, dirName, job.job_id);
+        if (!(await pathExists(inboxDir))) continue;
+        await rm(inboxDir, { recursive: true, force: true });
+        this.#audit('job.inbox_pruned', job, { reason: 'retention' });
+        removed.push({ job_id: job.job_id, state: job.state, error: 'RETENTION' });
+      }
+      return removed;
+    } finally {
+      this.retentionScanning = false;
     }
   }
 

@@ -20,7 +20,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/crypto.js`：P-256 ECDH、HKDF、SAS、AES-GCM 信封、`K_otp` 加密下发
 - `bridge/pairing.js`：start → claim（SAS 证明）→ 本地确认 SAS → `K_otp` 下发 → 设备登记/吊销；配对开始、认领、拒绝、确认、下发与吊销写审计
 - `bridge/device-store.js`：SQLite 设备元数据 + 每设备 `kEnc/kConfirm/kAuth` 的 DPAPI blob；内存 store 供测试
-- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、OTP 失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时
+- `bridge/job-service.js`：job 信封校验（设备/时间窗/重放/TOTP/AAD/工作区）、风险分级、每设备每小时任务上限、OTP/挑战码失败锁定、`pending/<job_id>/job.json` 原子落盘、分片上传与文件 SHA-256/大小复核、zip 内部条目扫描、挑战码/`job_hash`、手机签名状态查询、审批/拒绝并移动目录、扫描 `done/` 结果与结果文件并按设备加密、确认/上传/执行超时、结果与收件箱保留清理
 - `bridge/zip-scan.js`：`zip` 内部路径、类型、加密、嵌套深度、条目数与解压大小检查；结果文件同样扫描
 - `bridge/confirm.js`：HMAC-SHA256 + Base32 的 8 位确认码（绑定 `job_hash` 与挑战码）
 - `bridge/result.js`：结果与结果文件元数据校验、大小/类型限制、密钥/私钥模式扫描；`K_otp` 泄露阻断
@@ -29,7 +29,7 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `bridge/audit.js`：配对/任务事件写 `audit.jsonl`；字段白名单（job/pairing/device/state/risk/intent/文件数/字节/错误），不记录正文、路径、挑战码、job_hash、SAS、公钥或密钥；按 5MB 轮转、保留 4 份备份、启动时清理 90 天前条目
 - `bridge/servers.js`：API 端口放 `health/claim/provision/job`、带设备签名的 `GET /api/job/:id|result|result/file/:idx` 与 `PUT /api/job/:id/file/:idx`；本地端口放 `start/status/confirm/cancel/devices/jobs` 与 approve/reject，带 Host/Origin/JSON/admin/pair token 校验；生成 PWA 配对二维码
 - `bridge/local/`：PC 配对首页（`/`）、待确认任务页（`/jobs`）与配对确认页（CSP、`X-Frame-Options: DENY`、一次性 pair token）
-- `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite，每秒扫描 `done/` 结果并每 30 秒处理超时，任务状态写入 `audit.jsonl`
+- `bridge/index.js`：启动入口；首次启动生成/加载 `K_otp`，写 `admin.token`，起 API 7788 + 本地 7789，打开 SQLite，每秒扫描 `done/` 结果、每 30 秒处理超时、每 30 分钟清理过期结果，任务状态写入 `audit.jsonl`
 - `bridge/key-init.js`：初始化与轮换 CLI，不打印密码子
 - `pwa/crypto.js`：浏览器 P-256/HKDF/SAS/AES-GCM；把电脑下发的 `K_otp` 导入为**不可导出 HMAC 密钥**，只计算 TOTP；`sealEnvelope` 用于提交 job
 - `pwa/store.js`：IndexedDB 保存设备元数据、TOTP 密钥，以及不可导出的 `kEnc/kConfirm/kAuth`
@@ -37,8 +37,8 @@ PhoneJob 让手机在公网把「任务 + 文件」加密发给自己的电脑�
 - `plugin/index.js`：DSH Cordis 插件；轮询 `approved/`、原子认领到 `working/`、把附件复制到 `<workspace>/.phonejob/<id>/`、唤醒按 workspace 复用的专用会话；agent 的最终回复自动写成 `done/<id>/result.json`，输出目录 `out/` 中的文件复制到 `done/<id>/files/`；超过 30 分钟取消当前轮并回写超时失败；隔离 DSH 已实机验证认领/会话/失败结果回写
 - `plugin/cordis.patch.yml`：bundle patch，安装时自动插入 `phone-job` 行（`pollMs` / `jobTimeoutMs`）
 - `tools/serve-pwa.js`：本地 PWA 开发服务器（PWA 生产托管须独立稳定 origin，并在 bridge 配 `PHONEJOB_PWA_ORIGIN`）
-- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；80 项通过）
-- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化已用单元/HTTP 测试覆盖
+- 测试：`npm test`（Node 24 test runner；`qrcode-generator` 仅用于本地 QR；81 项通过）
+- 已验证：Chrome 端到端配对 + TOTP + 附件分片上传 + 发送任务 + 挑战码/响应 + 电脑审批 + 结果回传；600KB 文件按 2 片上传并审批进 `approved/`；隔离 DSH（临时 `DSH_HOME` + 空凭据）里插件真实加载、认领 `job_dsh_test`、创建会话、等待 agent，并在无 API key 时写出 `failed` 结果；插件纯函数（认领、附件复制、提示词、结果解析/回写/输出文件收集）已测；确认/上传/执行超时、结果文件哈希/密钥扫描与加密下载、zip 条目扫描、任务与配对审计字段白名单、轮转/90 天清理、任务限流、OTP/挑战码锁定及其 SQLite 持久化、结果保留清理已用单元/HTTP 测试覆盖
 - 桌面版真实模型回复仍待验证：npx CLI `0.1.0-rc.6` 读取桌面版 `0.2.0-rc.2` 的 `.credentials.yaml` 时格式不兼容（在插件之前中止），所以没有用 npx CLI 启动同一个 `DSH_HOME`；没有修改你的凭据文件
 - 下一步：在桌面版安装插件并跑一条真实模型任务；Service Worker/Web Push、iOS Safari 实测
 
@@ -72,6 +72,8 @@ PWA 生产的静态托管需在响应头设置 CSP（含 `frame-ancestors`，met
 审批流程：PWA 发送任务后显示电脑挑战码与手机响应码；打开电脑 `http://127.0.0.1:7789/jobs`，选择任务，核对挑战码，输入手机响应码并批准。确认码绑定 `job_hash`，错误响应不会移动 `pending/`。
 
 结果回传：DSH 插件把 `done/<job_id>/result.json` 写入收件箱，并把 `<workspace>/.phonejob/<job_id>/out/` 下的产物复制到 `done/<job_id>/files/`；bridge 每秒扫描，校验文本、文件元数据、SHA-256 和密钥模式后加密；PWA 通过签名接口拉取文本，结果文件按索引单独加密下载并在手机上复核 SHA-256。结果文件不执行、不预览，下载后请在本地自行判断。
+
+结果和 `done/`、`working/` 目录默认保留 7 天（`PHONEJOB_RESULT_TTL_MS`）；过期后任务转为 `EXPIRED`/`RESULT_EXPIRED`，手机显示“结果已过期”。`rejected/`、`expired/` 目录按同一 TTL 清理。
 
 ## DSH 插件
 

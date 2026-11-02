@@ -141,6 +141,7 @@
 - 执行器写 `done/<job_id>/result.json` 与 `done/<job_id>/files/<index>`；bridge 每秒扫描，校验元数据、实际大小、SHA-256 与密钥模式，失败则整单 `FAILED`。
 - 文本与每个结果文件分别用设备 `K_enc` 加密；文件下载签名绑定 `job_id + file_index`，手机端解密后再复核 SHA-256。
 - zip 附件与 zip 结果文件在上传/扫描阶段检查内部路径、类型、加密、嵌套深度、条目数与声明解压大小；嵌套 zip 递归检查，超限拒绝。
+- 结果与 `done/`、`working/` 目录默认保留 7 天（`PHONEJOB_RESULT_TTL_MS`）；过期后 `DONE/FAILED` 转 `EXPIRED`/`RESULT_EXPIRED` 并删除结果目录，`rejected/`、`expired/` 按同一 TTL 清理。
 - 文件不预览、不执行；Web Push 通知后续。
 
 ---
@@ -368,7 +369,7 @@ UPLOADING ──分片完成──▶ WAITING_CONFIRM
 - bridge 离线：隧道断开时手机收到 503，任务保留在手机队列，PC 上线后补投。
 - 幂等：同一 `job_id` 重复提交只接受第一次，后续返回当前状态。
 - 任务超时：上传 30 分钟、确认 10 分钟转 `EXPIRED`；执行 35 分钟兜底 `FAILED`（插件 30 分钟先取消）。更长任务需显式调大 TTL。
-- 结果丢失：手机端可按 job_id 重新拉取（结果保留 7 天）。
+- 结果保留：`done/`、`working/` 默认 7 天；过期转 `EXPIRED`/`RESULT_EXPIRED` 并删除目录，`rejected/`、`expired/` 同 TTL 清理。手机端按 job_id 在保留期内可重拉。
 
 ---
 
@@ -482,6 +483,7 @@ cloudflared tunnel run phonejob
 | PWA 任务表单 | 已实现文本 + 附件；工作区从配对二维码预填；512KB 分片上传 |
 | 文件通道 | 已实现：≤20 个、单文件 ≤50MB、总计 ≤200MB；类型白名单；SHA-256 复核；zip 条目扫描 |
 | 结果文件 | 已实现 outbox → `done/<id>/files/<index>`；元数据/哈希/密钥扫描；按索引加密下载；zip 条目扫描 |
+| 结果保留 | `done/`、`working/` 默认 7 天；过期 `EXPIRED`/`RESULT_EXPIRED`；`rejected/`、`expired/` 同 TTL 清理 |
 | 工作区白名单 | `PHONEJOB_WORKSPACES` 必填；为空时 job 全部拒绝 |
 | 任务确认 | 已实现挑战码 + 电脑 `/jobs` 审批 + `approved/`/`QUEUED` |
 | DSH 插件 | 已实现认领/会话唤醒/最终回复回写/30 分钟超时取消；隔离 DSH 已验，桌面真实模型回复待验证 |
@@ -492,4 +494,4 @@ cloudflared tunnel run phonejob
 
 ---
 
-*版本 v2.6 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；zip 条目扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定（SQLite）；DSH 插件隔离实机验证；其余评审项待定*
+*版本 v2.7 · 2026-11-01 · `K_otp` 电脑生成；设备/job SQLite；PWA 任务 + 附件；电脑审批；结果与结果文件加密回传；确认/上传/执行超时；结果保留清理；zip 条目扫描；任务与配对审计/90 天清理；限流与 OTP/挑战码锁定（SQLite）；DSH 插件隔离实机验证；其余评审项待定*

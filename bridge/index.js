@@ -38,6 +38,7 @@ function envDuration(name, fallback) {
 const confirmTtlMs = envDuration('PHONEJOB_CONFIRM_TTL_MS', 10 * 60_000);
 const uploadTtlMs = envDuration('PHONEJOB_UPLOAD_TTL_MS', 30 * 60_000);
 const executionTtlMs = envDuration('PHONEJOB_EXECUTION_TTL_MS', 35 * 60_000);
+const resultTtlMs = envDuration('PHONEJOB_RESULT_TTL_MS', 7 * 24 * 60 * 60_000);
 
 function envPositiveInt(name, fallback) {
   const raw = process.env[name];
@@ -92,6 +93,7 @@ const jobs = new JobService({
   confirmTtlMs,
   uploadTtlMs,
   executionTtlMs,
+  resultTtlMs,
   maxJobsPerHour,
   audit,
 });
@@ -108,6 +110,7 @@ const servers = createBridgeServers({
 
 let resultTimer = null;
 let timeoutTimer = null;
+let retentionTimer = null;
 
 try {
   await servers.start();
@@ -123,6 +126,13 @@ try {
   };
   scanTimeouts();
   timeoutTimer = setInterval(scanTimeouts, 30_000);
+  const scanRetention = () => {
+    jobs.scanRetention().catch((err) => {
+      console.error(`retention scan failed: ${err.message}`);
+    });
+  };
+  scanRetention();
+  retentionTimer = setInterval(scanRetention, 30 * 60_000);
   console.log('phonejob bridge');
   console.log(`  api:   http://127.0.0.1:${servers.apiPort} (expose this via the tunnel only)`);
   console.log(`  local: http://127.0.0.1:${servers.localPort} (never expose)`);
@@ -139,6 +149,7 @@ try {
   process.exitCode = 1;
   if (resultTimer) clearInterval(resultTimer);
   if (timeoutTimer) clearInterval(timeoutTimer);
+  if (retentionTimer) clearInterval(retentionTimer);
   await servers.close();
   await audit.close();
   await jobStore.close();
@@ -148,6 +159,7 @@ try {
 const shutdown = async () => {
   if (resultTimer) clearInterval(resultTimer);
   if (timeoutTimer) clearInterval(timeoutTimer);
+  if (retentionTimer) clearInterval(retentionTimer);
   await servers.close();
   await audit.close();
   await jobStore.close();
